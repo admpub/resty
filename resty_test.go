@@ -162,7 +162,7 @@ func TestPostJSONBytesSuccess(t *testing.T) {
 
 	c := dc()
 	c.SetHeader(hdrContentTypeKey, jsonContentType).
-		SetHeaders(map[string]string{hdrUserAgentKey: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) go-resty v0.1", hdrAcceptKey: jsonContentType})
+		SetHeaders(map[string]string{hdrUserAgentKey: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) go-resty v0.7", hdrAcceptKey: jsonContentType})
 
 	resp, err := c.R().
 		SetBody([]byte(`{"username":"testuser", "password":"testpass"}`)).
@@ -497,6 +497,27 @@ func TestFormData(t *testing.T) {
 		SetContentLength(true).
 		SetDebug(true).
 		SetLogger(ioutil.Discard)
+
+	resp, err := c.R().
+		SetFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
+		SetBasicAuth("myuser", "mypass").
+		Post(ts.URL + "/profile")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "Success", resp.String())
+}
+
+func TestFormDataDisableWarn(t *testing.T) {
+	ts := createFormPostServer(t)
+	defer ts.Close()
+
+	c := dc()
+	c.SetFormData(map[string]string{"zip_code": "00000", "city": "Los Angeles"}).
+		SetContentLength(true).
+		SetDebug(true).
+		SetLogger(ioutil.Discard).
+		SetDisableWarn(true)
 
 	resp, err := c.R().
 		SetFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
@@ -1001,6 +1022,119 @@ func TestDetectContentTypeForPointer(t *testing.T) {
 	logResponse(t, resp)
 }
 
+type ExampleUser struct {
+	FirstName string `json:"frist_name"`
+	LastName  string `json:"last_name"`
+	ZipCode   string `json:"zip_code"`
+}
+
+func TestDetectContentTypeForPointerWithSlice(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	users := &[]ExampleUser{
+		{FirstName: "firstname1", LastName: "lastname1", ZipCode: "10001"},
+		{FirstName: "firstname2", LastName: "lastname3", ZipCode: "10002"},
+		{FirstName: "firstname3", LastName: "lastname3", ZipCode: "10003"},
+	}
+
+	resp, err := dclr().
+		SetBody(users).
+		Post(ts.URL + "/users")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusAccepted, resp.StatusCode())
+
+	t.Logf("Result Success: %q", resp)
+
+	logResponse(t, resp)
+}
+
+func TestDetectContentTypeForPointerWithSliceMap(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	usersmap := map[string]interface{}{
+		"user1": ExampleUser{FirstName: "firstname1", LastName: "lastname1", ZipCode: "10001"},
+		"user2": &ExampleUser{FirstName: "firstname2", LastName: "lastname3", ZipCode: "10002"},
+		"user3": ExampleUser{FirstName: "firstname3", LastName: "lastname3", ZipCode: "10003"},
+	}
+
+	var users []map[string]interface{}
+	users = append(users, usersmap)
+
+	resp, err := dclr().
+		SetBody(&users).
+		Post(ts.URL + "/usersmap")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusAccepted, resp.StatusCode())
+
+	t.Logf("Result Success: %q", resp)
+
+	logResponse(t, resp)
+}
+
+func TestDetectContentTypeForSlice(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	users := []ExampleUser{
+		{FirstName: "firstname1", LastName: "lastname1", ZipCode: "10001"},
+		{FirstName: "firstname2", LastName: "lastname3", ZipCode: "10002"},
+		{FirstName: "firstname3", LastName: "lastname3", ZipCode: "10003"},
+	}
+
+	resp, err := dclr().
+		SetBody(users).
+		Post(ts.URL + "/users")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusAccepted, resp.StatusCode())
+
+	t.Logf("Result Success: %q", resp)
+
+	logResponse(t, resp)
+}
+
+func TestMuliParamQueryString(t *testing.T) {
+	ts1 := createGetServer(t)
+	defer ts1.Close()
+
+	client := dc()
+	req1 := client.R()
+
+	client.SetQueryParam("status", "open")
+
+	req1.SetQueryParam("status", "pending").
+		SetQueryParam("status", "approved").
+		Get(ts1.URL)
+
+	assertEqual(t, true, strings.Contains(req1.URL, "status=pending"))
+	assertEqual(t, true, strings.Contains(req1.URL, "status=approved"))
+
+	// because it's removed by key
+	assertEqual(t, false, strings.Contains(req1.URL, "status=open"))
+
+	ts2 := createGetServer(t)
+	defer ts2.Close()
+
+	req2 := client.R()
+
+	v := url.Values{
+		"status": []string{"pending", "approved", "reject"},
+	}
+
+	req2.SetMultiValueQueryParams(v).Get(ts2.URL)
+
+	assertEqual(t, true, strings.Contains(req2.URL, "status=pending"))
+	assertEqual(t, true, strings.Contains(req2.URL, "status=approved"))
+	assertEqual(t, true, strings.Contains(req2.URL, "status=reject"))
+
+	// because it's removed by key
+	assertEqual(t, false, strings.Contains(req2.URL, "status=open"))
+}
+
 func TestSetQueryStringTypical(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
@@ -1104,7 +1238,7 @@ func TestOutputFileAbsPath(t *testing.T) {
 func TestSetTransport(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
-	DefaultClient := dc()
+	DefaultClient = dc()
 
 	transport := &http.Transport{
 		// somthing like Proxying to httptest.Server, etc...
@@ -1115,6 +1249,14 @@ func TestSetTransport(t *testing.T) {
 	SetTransport(transport)
 
 	assertEqual(t, true, DefaultClient.transport != nil)
+}
+
+func TestSetScheme(t *testing.T) {
+	DefaultClient = dc()
+
+	SetScheme("http")
+
+	assertEqual(t, true, DefaultClient.scheme == "http")
 }
 
 func TestClientOptions(t *testing.T) {
@@ -1175,6 +1317,9 @@ func TestClientOptions(t *testing.T) {
 	SetAuthToken("AC75BD37F019E08FBC594900518B4F7E")
 	assertEqual(t, "AC75BD37F019E08FBC594900518B4F7E", DefaultClient.Token)
 
+	SetDisableWarn(true)
+	assertEqual(t, DefaultClient.DisableWarn, true)
+
 	err := &AuthError{}
 	SetError(err)
 	if reflect.TypeOf(err) == DefaultClient.Error {
@@ -1198,7 +1343,13 @@ func TestClientOptions(t *testing.T) {
 		return errors.New("sample test redirect")
 	})
 	SetContentLength(true)
+
 	SetDebug(true)
+	assertEqual(t, DefaultClient.Debug, true)
+
+	SetScheme("http")
+	assertEqual(t, DefaultClient.scheme, "http")
+
 	SetLogger(ioutil.Discard)
 }
 
@@ -1219,7 +1370,7 @@ func createGetServer(t *testing.T) *httptest.Server {
 			} else if r.URL.Path == "/mypage2" {
 				w.Write([]byte("TestGet: text response from mypage2"))
 			} else if r.URL.Path == "/set-timeout-test" {
-				time.Sleep(time.Second * 5)
+				time.Sleep(time.Second * 6)
 				w.Write([]byte("TestClientTimeout page"))
 			} else if r.URL.Path == "/my-image.png" {
 				fileBytes, _ := ioutil.ReadFile(getTestDataPath() + "/test-img.png")
@@ -1233,6 +1384,101 @@ func createGetServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
+func handleLoginEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/login" {
+		user := &User{}
+
+		// JSON
+		if IsJSONType(r.Header.Get(hdrContentTypeKey)) {
+			jd := json.NewDecoder(r.Body)
+			err := jd.Decode(user)
+			w.Header().Set(hdrContentTypeKey, jsonContentType)
+			if err != nil {
+				t.Logf("Error: %#v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{ "id": "bad_request", "message": "Unable to read user info" }`))
+				return
+			}
+
+			if user.Username == "testuser" && user.Password == "testpass" {
+				w.Write([]byte(`{ "id": "success", "message": "login successful" }`))
+			} else if user.Username == "testuser" && user.Password == "invalidjson" {
+				w.Write([]byte(`{ "id": "success", "message": "login successful", }`))
+			} else {
+				w.Header().Set("Www-Authenticate", "Protected Realm")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{ "id": "unauthorized", "message": "Invalid credentials" }`))
+			}
+
+			return
+		}
+
+		// XML
+		if IsXMLType(r.Header.Get(hdrContentTypeKey)) {
+			xd := xml.NewDecoder(r.Body)
+			err := xd.Decode(user)
+
+			w.Header().Set(hdrContentTypeKey, "application/xml")
+			if err != nil {
+				t.Logf("Error: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+				w.Write([]byte(`<AuthError><Id>bad_request</Id><Message>Unable to read user info</Message></AuthError>`))
+				return
+			}
+
+			if user.Username == "testuser" && user.Password == "testpass" {
+				w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+				w.Write([]byte(`<AuthSuccess><Id>success</Id><Message>login successful</Message></AuthSuccess>`))
+			} else if user.Username == "testuser" && user.Password == "invalidxml" {
+				w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+				w.Write([]byte(`<AuthSuccess><Id>success</Id><Message>login successful</AuthSuccess>`))
+			} else {
+				w.Header().Set("Www-Authenticate", "Protected Realm")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+				w.Write([]byte(`<AuthError><Id>unauthorized</Id><Message>Invalid credentials</Message></AuthError>`))
+			}
+
+			return
+		}
+	}
+}
+
+func handleUsersEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/users" {
+		// JSON
+		if IsJSONType(r.Header.Get(hdrContentTypeKey)) {
+			var users []ExampleUser
+			jd := json.NewDecoder(r.Body)
+			err := jd.Decode(&users)
+			w.Header().Set(hdrContentTypeKey, jsonContentType)
+			if err != nil {
+				t.Logf("Error: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{ "id": "bad_request", "message": "Unable to read user info" }`))
+				return
+			}
+
+			// logic check, since we are excepting to reach 3 records
+			if len(users) != 3 {
+				t.Log("Error: Excepted count of 3 records")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{ "id": "bad_request", "message": "Expected record count doesn't match" }`))
+				return
+			}
+
+			eu := users[2]
+			if eu.FirstName == "firstname3" && eu.ZipCode == "10003" {
+				w.WriteHeader(http.StatusAccepted)
+				w.Write([]byte(`{ "message": "Accepted" }`))
+			}
+
+			return
+		}
+	}
+}
+
 func createPostServer(t *testing.T) *httptest.Server {
 	ts := createTestServer(func(w http.ResponseWriter, r *http.Request) {
 		t.Logf("Method: %v", r.Method)
@@ -1240,58 +1486,34 @@ func createPostServer(t *testing.T) *httptest.Server {
 		t.Logf("Content-Type: %v", r.Header.Get(hdrContentTypeKey))
 
 		if r.Method == POST {
-			if r.URL.Path == "/login" {
-				user := &User{}
+			handleLoginEndpoint(t, w, r)
 
+			handleUsersEndpoint(t, w, r)
+
+			if r.URL.Path == "/usersmap" {
 				// JSON
 				if IsJSONType(r.Header.Get(hdrContentTypeKey)) {
+					var users []map[string]interface{}
 					jd := json.NewDecoder(r.Body)
-					err := jd.Decode(user)
+					err := jd.Decode(&users)
 					w.Header().Set(hdrContentTypeKey, jsonContentType)
 					if err != nil {
+						t.Logf("Error: %v", err)
 						w.WriteHeader(http.StatusBadRequest)
 						w.Write([]byte(`{ "id": "bad_request", "message": "Unable to read user info" }`))
 						return
 					}
 
-					if user.Username == "testuser" && user.Password == "testpass" {
-						w.Write([]byte(`{ "id": "success", "message": "login successful" }`))
-					} else if user.Username == "testuser" && user.Password == "invalidjson" {
-						w.Write([]byte(`{ "id": "success", "message": "login successful", }`))
-					} else {
-						w.Header().Set("Www-Authenticate", "Protected Realm")
-						w.WriteHeader(http.StatusUnauthorized)
-						w.Write([]byte(`{ "id": "unauthorized", "message": "Invalid credentials" }`))
-					}
-
-					return
-				}
-
-				// XML
-				if IsXMLType(r.Header.Get(hdrContentTypeKey)) {
-					xd := xml.NewDecoder(r.Body)
-					err := xd.Decode(user)
-
-					w.Header().Set(hdrContentTypeKey, "application/xml")
-					if err != nil {
+					// logic check, since we are excepting to reach 1 map records
+					if len(users) != 1 {
+						t.Log("Error: Excepted count of 1 map records")
 						w.WriteHeader(http.StatusBadRequest)
-						w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-						w.Write([]byte(`<AuthError><Id>bad_request</Id><Message>Unable to read user info</Message></AuthError>`))
+						w.Write([]byte(`{ "id": "bad_request", "message": "Expected record count doesn't match" }`))
 						return
 					}
 
-					if user.Username == "testuser" && user.Password == "testpass" {
-						w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-						w.Write([]byte(`<AuthSuccess><Id>success</Id><Message>login successful</Message></AuthSuccess>`))
-					} else if user.Username == "testuser" && user.Password == "invalidxml" {
-						w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-						w.Write([]byte(`<AuthSuccess><Id>success</Id><Message>login successful</AuthSuccess>`))
-					} else {
-						w.Header().Set("Www-Authenticate", "Protected Realm")
-						w.WriteHeader(http.StatusUnauthorized)
-						w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-						w.Write([]byte(`<AuthError><Id>unauthorized</Id><Message>Invalid credentials</Message></AuthError>`))
-					}
+					w.WriteHeader(http.StatusAccepted)
+					w.Write([]byte(`{ "message": "Accepted" }`))
 
 					return
 				}

@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
@@ -35,6 +36,7 @@ func New() *Client {
 		Log:        getLogger(os.Stderr),
 		httpClient: &http.Client{Jar: cookieJar},
 		transport:  &http.Transport{},
+		mutex:      &sync.Mutex{},
 	}
 
 	// Default redirect policy
@@ -131,6 +133,11 @@ func SetDebug(d bool) *Client {
 	return DefaultClient.SetDebug(d)
 }
 
+// SetDisableWarn method disables warning comes from `go-resty` client. See `Client.SetDisableWarn` for more information.
+func SetDisableWarn(d bool) *Client {
+	return DefaultClient.SetDisableWarn(d)
+}
+
 // SetLogger method sets given writer for logging. See `Client.SetLogger` for more information.
 func SetLogger(w io.Writer) *Client {
 	return DefaultClient.SetLogger(w)
@@ -207,6 +214,12 @@ func SetOutputDirectory(dirPath string) *Client {
 // See `Client.SetTransport` for more information.
 func SetTransport(transport *http.Transport) *Client {
 	return DefaultClient.SetTransport(transport)
+}
+
+// SetScheme method sets custom scheme in the resty client.
+// See `Client.SetScheme` for more information.
+func SetScheme(scheme string) *Client {
+	return DefaultClient.SetScheme(scheme)
 }
 
 func init() {

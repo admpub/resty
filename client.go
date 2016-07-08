@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -61,9 +62,8 @@ var (
 	jsonContentType = "application/json; charset=utf-8"
 	formContentType = "application/x-www-form-urlencoded"
 
-	plainTextCheck = regexp.MustCompile("(?i:text/plain)")
-	jsonCheck      = regexp.MustCompile("(?i:[application|text]/json)")
-	xmlCheck       = regexp.MustCompile("(?i:[application|text]/xml)")
+	jsonCheck = regexp.MustCompile("(?i:[application|text]/json)")
+	xmlCheck  = regexp.MustCompile("(?i:[application|text]/xml)")
 
 	hdrUserAgentValue = "go-resty v%s - https://github.com/go-resty/resty"
 )
@@ -71,23 +71,26 @@ var (
 // Client type is used for HTTP/RESTful global values
 // for all request raised from the client
 type Client struct {
-	HostURL    string
-	QueryParam url.Values
-	FormData   url.Values
-	Header     http.Header
-	UserInfo   *User
-	Token      string
-	Cookies    []*http.Cookie
-	Error      reflect.Type
-	Debug      bool
-	Log        *log.Logger
+	HostURL     string
+	QueryParam  url.Values
+	FormData    url.Values
+	Header      http.Header
+	UserInfo    *User
+	Token       string
+	Cookies     []*http.Cookie
+	Error       reflect.Type
+	Debug       bool
+	DisableWarn bool
+	Log         *log.Logger
 
 	httpClient       *http.Client
 	transport        *http.Transport
 	setContentLength bool
 	isHTTPMode       bool
 	outputDirectory  string
+	scheme           string
 	proxyURL         *url.URL
+	mutex            *sync.Mutex
 	beforeRequest    []func(*Client, *Request) error
 	afterResponse    []func(*Client, *Response) error
 }
@@ -328,9 +331,19 @@ func (c *Client) OnAfterResponse(m func(*Client, *Response) error) *Client {
 // SetDebug method enables the debug mode on `go-resty` client. Client logs details of every request and response.
 // For `Request` it logs information such as HTTP verb, Relative URL path, Host, Headers, Body if it has one.
 // For `Response` it logs information such as Status, Response Time, Headers, Body if it has one.
+//		resty.SetDebug(true)
 //
 func (c *Client) SetDebug(d bool) *Client {
 	c.Debug = d
+	return c
+}
+
+// SetDisableWarn method disables the warning message on `go-resty` client.
+// For example: go-resty warns the user when BasicAuth used on HTTP mode.
+//		resty.SetDisableWarn(true)
+//
+func (c *Client) SetDisableWarn(d bool) *Client {
+	c.DisableWarn = d
 	return c
 }
 
@@ -571,6 +584,17 @@ func (c *Client) SetTransport(transport *http.Transport) *Client {
 	return c
 }
 
+// SetScheme method sets custom scheme in the resty client. Its way to override default.
+// 		resty.SetScheme("http")
+//
+func (c *Client) SetScheme(scheme string) *Client {
+	if c.scheme == "" {
+		c.scheme = scheme
+	}
+
+	return c
+}
+
 // executes the given `Request` object and returns response
 func (c *Client) execute(req *Request) (*Response, error) {
 	// Apply Request middleware
@@ -582,6 +606,8 @@ func (c *Client) execute(req *Request) (*Response, error) {
 		}
 	}
 
+	c.mutex.Lock()
+
 	if req.proxyURL != nil {
 		c.transport.Proxy = http.ProxyURL(req.proxyURL)
 	} else if c.proxyURL != nil {
@@ -592,7 +618,10 @@ func (c *Client) execute(req *Request) (*Response, error) {
 
 	req.Time = time.Now()
 	c.httpClient.Transport = c.transport
+
 	resp, err := c.httpClient.Do(req.RawRequest)
+
+	c.mutex.Unlock()
 
 	response := &Response{
 		Request:     req,
@@ -771,13 +800,18 @@ func IsStringEmpty(str string) bool {
 // DetectContentType method is used to figure out `Request.Body` content type for request header
 func DetectContentType(body interface{}) string {
 	contentType := plainTextType
-	switch kindOf(body) {
+	kind := kindOf(body)
+	switch kind {
 	case reflect.Struct, reflect.Map:
 		contentType = jsonContentType
 	case reflect.String:
 		contentType = plainTextType
 	default:
-		contentType = http.DetectContentType(body.([]byte))
+		if b, ok := body.([]byte); ok {
+			contentType = http.DetectContentType(b)
+		} else if kind == reflect.Slice {
+			contentType = jsonContentType
+		}
 	}
 
 	return contentType

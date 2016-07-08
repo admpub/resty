@@ -46,11 +46,20 @@ func parseRequestURL(c *Client, r *Request) error {
 
 	// Adding Query Param
 	query := reqURL.Query()
-	for k := range c.QueryParam {
-		query.Set(k, c.QueryParam.Get(k))
+	for k, v := range c.QueryParam {
+		for _, iv := range v {
+			query.Add(k, iv)
+		}
 	}
-	for k := range r.QueryParam {
-		query.Set(k, r.QueryParam.Get(k))
+
+	for k, v := range r.QueryParam {
+		// remove query param from client level by key
+		// since overrides happens for that key in the request
+		query.Del(k)
+
+		for _, iv := range v {
+			query.Add(k, iv)
+		}
 	}
 
 	reqURL.RawQuery = query.Encode()
@@ -104,6 +113,8 @@ func parseRequestBody(c *Client, r *Request) (err error) {
 
 		// Handling Request body
 		if r.Body != nil {
+			handleContentType(c, r)
+
 			if err = handleRequestBody(c, r); err != nil {
 				return
 			}
@@ -136,6 +147,11 @@ func createHTTPRequest(c *Client, r *Request) (err error) {
 		r.RawRequest.AddCookie(cookie)
 	}
 
+	if r.RawRequest.URL != nil && r.RawRequest.URL.Scheme == "" {
+		r.RawRequest.URL.Scheme = c.scheme
+		r.RawRequest.URL.Host = r.URL
+	}
+
 	return
 }
 
@@ -149,8 +165,11 @@ func addCredentials(c *Client, r *Request) error {
 		r.RawRequest.SetBasicAuth(c.UserInfo.Username, c.UserInfo.Password)
 		isBasicAuth = true
 	}
-	if isBasicAuth && !strings.HasPrefix(r.URL, "https") {
-		c.Log.Println("WARNING - Using Basic Auth in HTTP mode is not secure.")
+
+	if !c.DisableWarn {
+		if isBasicAuth && !strings.HasPrefix(r.URL, "https") {
+			c.Log.Println("WARNING - Using Basic Auth in HTTP mode is not secure.")
+		}
 	}
 
 	// Token Auth
@@ -289,26 +308,31 @@ func handleFormData(c *Client, r *Request) {
 	r.isFormData = true
 }
 
-func handleRequestBody(c *Client, r *Request) (err error) {
+func handleContentType(c *Client, r *Request) {
 	contentType := r.Header.Get(hdrContentTypeKey)
 	if IsStringEmpty(contentType) {
 		contentType = DetectContentType(r.Body)
 		r.Header.Set(hdrContentTypeKey, contentType)
 	}
+}
 
+func handleRequestBody(c *Client, r *Request) (err error) {
 	var bodyBytes []byte
+	contentType := r.Header.Get(hdrContentTypeKey)
 	kind := kindOf(r.Body)
+
 	if reader, ok := r.Body.(io.Reader); ok {
 		r.bodyBuf = &bytes.Buffer{}
 		r.bodyBuf.ReadFrom(reader)
-	} else if IsJSONType(contentType) && (kind == reflect.Struct || kind == reflect.Map) {
+	} else if b, ok := r.Body.([]byte); ok {
+		bodyBytes = b
+	} else if s, ok := r.Body.(string); ok {
+		bodyBytes = []byte(s)
+	} else if IsJSONType(contentType) &&
+		(kind == reflect.Struct || kind == reflect.Map || kind == reflect.Slice) {
 		bodyBytes, err = json.Marshal(r.Body)
 	} else if IsXMLType(contentType) && (kind == reflect.Struct) {
 		bodyBytes, err = xml.Marshal(r.Body)
-	} else if b, ok := r.Body.(string); ok {
-		bodyBytes = []byte(b)
-	} else if b, ok := r.Body.([]byte); ok {
-		bodyBytes = b
 	}
 
 	if bodyBytes == nil && r.bodyBuf == nil {
