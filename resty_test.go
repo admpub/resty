@@ -131,7 +131,7 @@ func handleLoginEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
 			} else if r.URL.Query().Get("ct") == "rpc" {
 				w.Header().Set(hdrContentTypeKey, "application/json-rpc")
 			} else {
-				w.Header().Set(hdrContentTypeKey, jsonContentType)
+				w.Header().Set(hdrContentTypeKey, "application/json")
 			}
 
 			if err != nil {
@@ -192,7 +192,7 @@ func handleUsersEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
 			var users []ExampleUser
 			jd := json.NewDecoder(r.Body)
 			err := jd.Decode(&users)
-			w.Header().Set(hdrContentTypeKey, jsonContentType)
+			w.Header().Set(hdrContentTypeKey, "application/json")
 			if err != nil {
 				t.Logf("Error: %v", err)
 				w.WriteHeader(http.StatusBadRequest)
@@ -240,7 +240,7 @@ func createPostServer(t *testing.T) *httptest.Server {
 							t.Errorf("Error: could not read post body: %s", err.Error())
 						}
 						t.Logf("Got query param: status=500 so we're returning the post body as response and a 500 status code. body: %s", string(body))
-						w.Header().Set(hdrContentTypeKey, jsonContentType)
+						w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
 						w.WriteHeader(http.StatusInternalServerError)
 						_, _ = w.Write(body)
 						return
@@ -249,7 +249,7 @@ func createPostServer(t *testing.T) *httptest.Server {
 					var users []map[string]interface{}
 					jd := json.NewDecoder(r.Body)
 					err := jd.Decode(&users)
-					w.Header().Set(hdrContentTypeKey, jsonContentType)
+					w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
 					if err != nil {
 						t.Logf("Error: %v", err)
 						w.WriteHeader(http.StatusBadRequest)
@@ -391,7 +391,7 @@ func createAuthServer(t *testing.T) *httptest.Server {
 				auth := r.Header.Get("Authorization")
 				t.Logf("Bearer Auth: %v", auth)
 
-				w.Header().Set(hdrContentTypeKey, jsonContentType)
+				w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
 
 				if !strings.HasPrefix(auth, "Bearer ") {
 					w.Header().Set("Www-Authenticate", "Protected Realm")
@@ -414,7 +414,7 @@ func createAuthServer(t *testing.T) *httptest.Server {
 				auth := r.Header.Get("Authorization")
 				t.Logf("Basic Auth: %v", auth)
 
-				w.Header().Set(hdrContentTypeKey, jsonContentType)
+				w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
 
 				password, err := base64.StdEncoding.DecodeString(auth[6:])
 				if err != nil || string(password) != "myuser:basicauth" {
@@ -450,14 +450,14 @@ func createGenServer(t *testing.T) *httptest.Server {
 				w.Header().Set(hdrContentTypeKey, plainTextType)
 				w.Header().Set(hdrContentEncodingKey, "gzip")
 				zw := gzip.NewWriter(w)
-				zw.Write([]byte("This is Gzip response testing"))
+				_, _ = zw.Write([]byte("This is Gzip response testing"))
 				zw.Close()
 			} else if r.URL.Path == "/gzip-test-gziped-empty-body" {
 				w.Header().Set(hdrContentTypeKey, plainTextType)
 				w.Header().Set(hdrContentEncodingKey, "gzip")
 				zw := gzip.NewWriter(w)
 				// write gziped empty body
-				zw.Write([]byte(""))
+				_, _ = zw.Write([]byte(""))
 				zw.Close()
 			} else if r.URL.Path == "/gzip-test-no-gziped-body" {
 				w.Header().Set(hdrContentTypeKey, plainTextType)
@@ -472,7 +472,7 @@ func createGenServer(t *testing.T) *httptest.Server {
 			if r.URL.Path == "/plaintext" {
 				_, _ = w.Write([]byte("TestPut: plain text response"))
 			} else if r.URL.Path == "/json" {
-				w.Header().Set(hdrContentTypeKey, jsonContentType)
+				w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
 				_, _ = w.Write([]byte(`{"response":"json response"}`))
 			} else if r.URL.Path == "/xml" {
 				w.Header().Set(hdrContentTypeKey, "application/xml")
@@ -540,9 +540,16 @@ func createTestServer(fn func(w http.ResponseWriter, r *http.Request)) *httptest
 }
 
 func dc() *Client {
-	DefaultClient = New()
-	DefaultClient.SetLogger(ioutil.Discard)
-	return DefaultClient
+	c := New().
+		outputLogTo(ioutil.Discard)
+	return c
+}
+
+func dcl() *Client {
+	c := New().
+		SetDebug(true).
+		outputLogTo(ioutil.Discard)
+	return c
 }
 
 func dcr() *Request {
@@ -550,10 +557,9 @@ func dcr() *Request {
 }
 
 func dclr() *Request {
-	c := dc()
-	c.SetDebug(true)
-	c.SetLogger(ioutil.Discard)
-
+	c := dc().
+		SetDebug(true).
+		outputLogTo(ioutil.Discard)
 	return c.R()
 }
 
