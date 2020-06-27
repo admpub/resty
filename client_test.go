@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2019 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -55,6 +55,30 @@ func TestClientAuthToken(t *testing.T) {
 	assertEqual(t, http.StatusOK, resp.StatusCode())
 }
 
+func TestClientAuthScheme(t *testing.T) {
+	ts := createAuthServer(t)
+	defer ts.Close()
+
+	c := dc()
+	// Ensure default Bearer
+	c.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF").
+		SetHostURL(ts.URL + "/")
+
+	resp, err := c.R().Get("/profile")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+
+	// Ensure setting the scheme works as well
+	c.SetAuthScheme("Bearer")
+
+	resp2, err2 := c.R().Get("/profile")
+	assertError(t, err2)
+	assertEqual(t, http.StatusOK, resp2.StatusCode())
+
+}
+
 func TestOnAfterMiddleware(t *testing.T) {
 	ts := createGenServer(t)
 	defer ts.Close()
@@ -83,11 +107,13 @@ func TestClientRedirectPolicy(t *testing.T) {
 	c := dc().SetRedirectPolicy(FlexibleRedirectPolicy(20))
 	_, err := c.R().Get(ts.URL + "/redirect-1")
 
-	assertEqual(t, "Get /redirect-21: stopped after 20 redirects", err.Error())
+	assertEqual(t, true, ("Get /redirect-21: stopped after 20 redirects" == err.Error() ||
+		"Get \"/redirect-21\": stopped after 20 redirects" == err.Error()))
 
 	c.SetRedirectPolicy(NoRedirectPolicy())
 	_, err = c.R().Get(ts.URL + "/redirect-1")
-	assertEqual(t, "Get /redirect-2: auto redirect is disabled", err.Error())
+	assertEqual(t, true, ("Get /redirect-2: auto redirect is disabled" == err.Error() ||
+		"Get \"/redirect-2\": auto redirect is disabled" == err.Error()))
 }
 
 func TestClientTimeout(t *testing.T) {
@@ -175,6 +201,36 @@ func TestClientSetRootCertificateNotExists(t *testing.T) {
 	assertNil(t, transport.TLSClientConfig)
 }
 
+func TestClientSetRootCertificateFromString(t *testing.T) {
+	client := dc()
+	rootPemData, err := ioutil.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
+	assertNil(t, err)
+
+	client.SetRootCertificateFromString(string(rootPemData))
+
+	transport, err := client.transport()
+
+	assertNil(t, err)
+	assertNotNil(t, transport.TLSClientConfig.RootCAs)
+}
+
+func TestClientSetRootCertificateFromStringErrorTls(t *testing.T) {
+	client := NewWithClient(&http.Client{})
+	client.outputLogTo(ioutil.Discard)
+
+	rootPemData, err := ioutil.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
+	assertNil(t, err)
+	rt := &CustomRoundTripper{}
+	client.SetTransport(rt)
+	transport, err := client.transport()
+
+	client.SetRootCertificateFromString(string(rootPemData))
+
+	assertNotNil(t, rt)
+	assertNotNil(t, err)
+	assertNil(t, transport)
+}
+
 func TestClientOnBeforeRequestModification(t *testing.T) {
 	tc := dc()
 	tc.OnBeforeRequest(func(c *Client, r *Request) error {
@@ -255,10 +311,10 @@ func TestClientOptions(t *testing.T) {
 	assertEqual(t, "default-cookie", client.Cookies[0].Name)
 
 	cookies := []*http.Cookie{
-		&http.Cookie{
+		{
 			Name:  "default-cookie-1",
 			Value: "This is default-cookie 1 value",
-		}, &http.Cookie{
+		}, {
 			Name:  "default-cookie-2",
 			Value: "This is default-cookie 2 value",
 		},

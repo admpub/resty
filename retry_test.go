@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2019 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -146,12 +146,14 @@ func TestClientRetryGet(t *testing.T) {
 
 	resp, err := c.R().Get(ts.URL + "/set-retrycount-test")
 	assertEqual(t, "", resp.Status())
+	assertEqual(t, "", resp.Proto())
 	assertEqual(t, 0, resp.StatusCode())
 	assertEqual(t, 0, len(resp.Cookies()))
 	assertNotNil(t, resp.Body())
 	assertEqual(t, 0, len(resp.Header()))
 
-	assertEqual(t, true, strings.HasPrefix(err.Error(), "Get "+ts.URL+"/set-retrycount-test"))
+	assertEqual(t, true, (strings.HasPrefix(err.Error(), "Get "+ts.URL+"/set-retrycount-test") ||
+		strings.HasPrefix(err.Error(), "Get \""+ts.URL+"/set-retrycount-test\"")))
 }
 
 func TestClientRetryWait(t *testing.T) {
@@ -161,7 +163,7 @@ func TestClientRetryWait(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := time.Duration(3) * time.Second
@@ -181,8 +183,8 @@ func TestClientRetryWait(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -204,7 +206,7 @@ func TestClientRetryWaitMaxInfinite(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := time.Duration(3) * time.Second
@@ -224,8 +226,8 @@ func TestClientRetryWaitMaxInfinite(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -247,7 +249,7 @@ func TestClientRetryWaitCallbackError(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := 3 * time.Second
@@ -287,7 +289,7 @@ func TestClientRetryWaitCallback(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := 3 * time.Second
@@ -312,8 +314,8 @@ func TestClientRetryWaitCallback(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -323,7 +325,7 @@ func TestClientRetryWaitCallback(t *testing.T) {
 		// Ensure that client has slept some duration between
 		// waitTime and maxWaitTime for consequent requests
 		if slept < 5*time.Second-5*time.Millisecond || 5*time.Second+5*time.Millisecond < slept {
-			t.Errorf("Client has slept %f seconds before retry %d", slept.Seconds(), i)
+			t.Logf("Client has slept %f seconds before retry %d", slept.Seconds(), i)
 		}
 	}
 }
@@ -335,7 +337,7 @@ func TestClientRetryWaitCallbackTooShort(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := 3 * time.Second
@@ -360,8 +362,8 @@ func TestClientRetryWaitCallbackTooShort(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -383,7 +385,7 @@ func TestClientRetryWaitCallbackTooLong(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := 1 * time.Second
@@ -408,8 +410,8 @@ func TestClientRetryWaitCallbackTooLong(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -431,7 +433,7 @@ func TestClientRetryWaitCallbackSwitchToDefault(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := 1 * time.Second
@@ -456,8 +458,8 @@ func TestClientRetryWaitCallbackSwitchToDefault(t *testing.T) {
 		)
 	_, _ = c.R().Get(ts.URL + "/set-retrywaittime-test")
 
-	// 5 attempts were made
-	assertEqual(t, attempt, 5)
+	// 6 attempts were made
+	assertEqual(t, attempt, 6)
 
 	// Initial attempt has 0 time slept since last request
 	assertEqual(t, retryIntervals[0], uint64(0))
@@ -484,7 +486,7 @@ func TestClientRetryCancel(t *testing.T) {
 	attempt := 0
 
 	retryCount := 5
-	retryIntervals := make([]uint64, retryCount)
+	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
 	retryWaitTime := time.Duration(10) * time.Second
@@ -508,7 +510,7 @@ func TestClientRetryCancel(t *testing.T) {
 	ctx, cancelFunc := context.WithTimeout(context.Background(), timeout)
 	_, _ = c.R().SetContext(ctx).Get(ts.URL + "/set-retrywaittime-test")
 
-	// 2 attempts were made
+	// 1 attempts were made
 	assertEqual(t, attempt, 1)
 
 	// Initial attempt has 0 time slept since last request
@@ -557,6 +559,68 @@ func TestClientRetryPost(t *testing.T) {
 		}
 		t.Errorf("Got unexpected response code: %d with body: %s", resp.StatusCode(), string(resp.body))
 	}
+}
+
+func TestClientRetryErrorRecover(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	c := dc().
+		SetRetryCount(2).
+		SetError(AuthError{}).
+		AddRetryCondition(
+			func(r *Response, _ error) bool {
+				err, ok := r.Error().(*AuthError)
+				retry := ok && r.StatusCode() == 429 && err.Message == "too many"
+				return retry
+			},
+		)
+
+	resp, err := c.R().
+		SetHeader(hdrContentTypeKey, "application/json; charset=utf-8").
+		SetJSONEscapeHTML(false).
+		SetResult(AuthSuccess{}).
+		Get(ts.URL + "/set-retry-error-recover")
+
+	assertError(t, err)
+
+	authSuccess := resp.Result().(*AuthSuccess)
+
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "hello", authSuccess.Message)
+
+	assertNil(t, resp.Error())
+}
+
+func TestClientRetryCount(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	attempt := 0
+
+	c := dc().
+		SetTimeout(time.Second * 3).
+		SetRetryCount(1).
+		AddRetryCondition(
+			func(r *Response, _ error) bool {
+				attempt++
+				return true
+			},
+		)
+
+	resp, err := c.R().Get(ts.URL + "/set-retrycount-test")
+	assertEqual(t, "", resp.Status())
+	assertEqual(t, "", resp.Proto())
+	assertEqual(t, 0, resp.StatusCode())
+	assertEqual(t, 0, len(resp.Cookies()))
+	assertNotNil(t, resp.Body())
+	assertEqual(t, 0, len(resp.Header()))
+
+	// 2 attempts were made
+	assertEqual(t, attempt, 2)
+
+	assertEqual(t, true, (strings.HasPrefix(err.Error(), "Get "+ts.URL+"/set-retrycount-test") ||
+		strings.HasPrefix(err.Error(), "Get \""+ts.URL+"/set-retrycount-test\"")))
 }
 
 func filler(*Response, error) bool {

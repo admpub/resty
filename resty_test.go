@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2019 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -64,7 +64,7 @@ func createGetServer(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte("TestGet: text response from mypage2"))
 			case "/set-retrycount-test":
 				attp := atomic.AddInt32(&attempt, 1)
-				if attp <= 3 {
+				if attp <= 4 {
 					time.Sleep(time.Second * 6)
 				}
 				_, _ = w.Write([]byte("TestClientRetry page"))
@@ -79,6 +79,16 @@ func createGetServer(t *testing.T) *httptest.Server {
 					sinceLastRequest := now.Sub(lastRequest)
 					lastRequest = now
 					_, _ = fmt.Fprintf(w, "%d", uint64(sinceLastRequest))
+				}
+				atomic.AddInt32(&attempt, 1)
+
+			case "/set-retry-error-recover":
+				w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
+				if atomic.LoadInt32(&attempt) == 0 {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{ "message": "too many" }`))
+				} else {
+					_, _ = w.Write([]byte(`{ "message": "hello" }`))
 				}
 				atomic.AddInt32(&attempt, 1)
 			case "/set-timeout-test-with-sequence":
@@ -230,6 +240,13 @@ func createPostServer(t *testing.T) *httptest.Server {
 			handleLoginEndpoint(t, w, r)
 
 			handleUsersEndpoint(t, w, r)
+
+			if r.URL.Path == "/login-json-html" {
+				w.Header().Set(hdrContentTypeKey, "text/html")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`<htm><body>Test JSON request with HTML response</body></html>`))
+				return
+			}
 
 			if r.URL.Path == "/usersmap" {
 				// JSON

@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2019 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -252,11 +252,21 @@ func addCredentials(c *Client, r *Request) error {
 		}
 	}
 
-	// Token Auth
+	// Set the Authorization Header Scheme
+	var authScheme string
+	if !IsStringEmpty(r.AuthScheme) {
+		authScheme = r.AuthScheme
+	} else if !IsStringEmpty(c.AuthScheme) {
+		authScheme = c.AuthScheme
+	} else {
+		authScheme = "Bearer"
+	}
+
+	// Build the Token Auth header
 	if !IsStringEmpty(r.Token) { // takes precedence
-		r.RawRequest.Header.Set(hdrAuthorizationKey, "Bearer "+r.Token)
+		r.RawRequest.Header.Set(hdrAuthorizationKey, authScheme+" "+r.Token)
 	} else if !IsStringEmpty(c.Token) {
-		r.RawRequest.Header.Set(hdrAuthorizationKey, "Bearer "+c.Token)
+		r.RawRequest.Header.Set(hdrAuthorizationKey, authScheme+" "+c.Token)
 	}
 
 	return nil
@@ -265,7 +275,7 @@ func addCredentials(c *Client, r *Request) error {
 func requestLogger(c *Client, r *Request) error {
 	if c.Debug {
 		rr := r.RawRequest
-		rl := &RequestLog{Header: copyHeaders(rr.Header), Body: r.fmtBodyString()}
+		rl := &RequestLog{Header: copyHeaders(rr.Header), Body: r.fmtBodyString(c.debugBodySizeLimit)}
 		if c.requestLog != nil {
 			if err := c.requestLog(rl); err != nil {
 				return err
@@ -304,6 +314,7 @@ func responseLogger(c *Client, res *Response) error {
 		debugLog := res.Request.values[debugRequestLogKey].(string)
 		debugLog += "~~~ RESPONSE ~~~\n" +
 			fmt.Sprintf("STATUS       : %s\n", res.Status()) +
+			fmt.Sprintf("PROTO        : %s\n", res.RawResponse.Proto) +
 			fmt.Sprintf("RECEIVED AT  : %v\n", res.ReceivedAt().Format(time.RFC3339Nano)) +
 			fmt.Sprintf("TIME DURATION: %v\n", res.Time()) +
 			"HEADERS      :\n" +
@@ -315,7 +326,7 @@ func responseLogger(c *Client, res *Response) error {
 		}
 		debugLog += "==============================================================================\n"
 
-		c.log.Debugf(debugLog)
+		c.log.Debugf("%s", debugLog)
 	}
 
 	return nil
@@ -326,10 +337,11 @@ func parseResponseBody(c *Client, res *Response) (err error) {
 		return
 	}
 	// Handles only JSON or XML content type
-	ct := firstNonEmpty(res.Header().Get(hdrContentTypeKey), res.Request.fallbackContentType)
+	ct := firstNonEmpty(res.Request.forceContentType, res.Header().Get(hdrContentTypeKey), res.Request.fallbackContentType)
 	if IsJSONType(ct) || IsXMLType(ct) {
 		// HTTP status code > 199 and < 300, considered as Result
 		if res.IsSuccess() {
+			res.Request.Error = nil
 			if res.Request.Result != nil {
 				err = Unmarshalc(c, ct, res.body, res.Request.Result)
 				return
@@ -443,7 +455,7 @@ func handleRequestBody(c *Client, r *Request) (err error) {
 	r.bodyBuf = nil
 
 	if reader, ok := r.Body.(io.Reader); ok {
-		if c.setContentLength || r.setContentLength { // keep backward compability
+		if c.setContentLength || r.setContentLength { // keep backward compatibility
 			r.bodyBuf = acquireBuffer()
 			_, err = r.bodyBuf.ReadFrom(reader)
 			r.Body = nil

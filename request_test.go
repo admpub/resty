@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2019 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -38,6 +38,7 @@ func TestGet(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "HTTP/1.1", resp.Proto())
 	assertEqual(t, "200 OK", resp.Status())
 	assertNotNil(t, resp.Body())
 	assertEqual(t, "TestGet: text response", resp.String())
@@ -56,6 +57,7 @@ func TestGetCustomUserAgent(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "HTTP/1.1", resp.Proto())
 	assertEqual(t, "200 OK", resp.Status())
 	assertEqual(t, "TestGet: text response", resp.String())
 
@@ -80,6 +82,7 @@ func TestGetClientParamRequestParam(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "HTTP/1.1", resp.Proto())
 	assertEqual(t, "200 OK", resp.Status())
 	assertEqual(t, "TestGet: text response", resp.String())
 
@@ -311,6 +314,34 @@ func TestPostJSONMapInvalidResponseJson(t *testing.T) {
 	logResponse(t, resp)
 }
 
+func TestForceContentTypeForGH276andGH240(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	retried := 0
+	c := dc()
+	c.SetDebug(false)
+	c.SetRetryCount(3)
+	c.SetRetryAfter(RetryAfterFunc(func(*Client, *Response) (time.Duration, error) {
+		retried++
+		return 0, nil
+	}))
+
+	resp, err := c.R().
+		SetBody(map[string]interface{}{"username": "testuser", "password": "testpass"}).
+		SetResult(AuthSuccess{}).
+		ForceContentType("application/json").
+		Post(ts.URL + "/login-json-html")
+
+	assertNotNil(t, err) // expecting error due to incorrect content type from server end
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, 0, retried)
+
+	t.Logf("Result Success: %q", resp.Result().(*AuthSuccess))
+
+	logResponse(t, resp)
+}
+
 func TestPostXMLStringSuccess(t *testing.T) {
 	ts := createPostServer(t)
 	defer ts.Close()
@@ -484,6 +515,24 @@ func TestRequestAuthToken(t *testing.T) {
 		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF")
 
 	resp, err := c.R().
+		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF-Request").
+		Get(ts.URL + "/profile")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+}
+
+func TestRequestAuthScheme(t *testing.T) {
+	ts := createAuthServer(t)
+	defer ts.Close()
+
+	c := dc()
+	c.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+		SetAuthScheme("OAuth").
+		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF")
+
+	resp, err := c.R().
+		SetAuthScheme("Bearer").
 		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF-Request").
 		Get(ts.URL + "/profile")
 
@@ -668,6 +717,19 @@ func TestMultiPartUploadFileNotOnGetOrDelete(t *testing.T) {
 	assertEqual(t, "multipart content is not allowed in HTTP verb [DELETE]", err.Error())
 }
 
+func TestMultiPartFormData(t *testing.T) {
+	ts := createFormPostServer(t)
+	defer ts.Close()
+	resp, err := dclr().
+		SetMultipartFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
+		SetBasicAuth("myuser", "mypass").
+		Post(ts.URL + "/profile")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "Success", resp.String())
+}
+
 func TestMultiPartMultipartField(t *testing.T) {
 	ts := createFormPostServer(t)
 	defer ts.Close()
@@ -748,7 +810,7 @@ func TestGetWithCookie(t *testing.T) {
 			Value: "This is cookie 2 value",
 		}).
 		SetCookies([]*http.Cookie{
-			&http.Cookie{
+			{
 				Name:  "go-resty-1",
 				Value: "This is cookie 1 value additional append",
 			},
@@ -766,37 +828,41 @@ func TestGetWithCookies(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
 
-	cookies := []*http.Cookie{
-		&http.Cookie{
-			Name:  "go-resty-1",
-			Value: "This is cookie 1 value",
-		},
-		&http.Cookie{
-			Name:  "go-resty-2",
-			Value: "This is cookie 2 value",
-		},
-	}
-
 	c := dc()
-	c.SetHostURL(ts.URL).
-		SetCookies(cookies)
+	c.SetHostURL(ts.URL).SetDebug(true)
 
 	tu, _ := url.Parse(ts.URL)
 	c.GetClient().Jar.SetCookies(tu, []*http.Cookie{
-		&http.Cookie{
+		{
 			Name:  "jar-go-resty-1",
 			Value: "From Jar - This is cookie 1 value",
 		},
-		&http.Cookie{
+		{
 			Name:  "jar-go-resty-2",
 			Value: "From Jar - This is cookie 2 value",
 		},
 	})
 
-	resp, err := c.R().
-		SetCookie(&http.Cookie{
+	resp, err := c.R().SetHeader("Cookie", "").Get("mypage2")
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+
+	// Client cookies
+	c.SetCookies([]*http.Cookie{
+		{
 			Name:  "go-resty-1",
-			Value: "This is cookie 1 value additional append",
+			Value: "This is cookie 1 value",
+		},
+		{
+			Name:  "go-resty-2",
+			Value: "This is cookie 2 value",
+		},
+	})
+
+	resp, err = c.R().
+		SetCookie(&http.Cookie{
+			Name:  "req-go-resty-1",
+			Value: "This is request cookie 1 value additional append",
 		}).
 		Get("mypage2")
 
@@ -893,7 +959,8 @@ func TestHTTPAutoRedirectUpTo10(t *testing.T) {
 
 	_, err := dc().R().Get(ts.URL + "/redirect-1")
 
-	assertEqual(t, "Get /redirect-11: stopped after 10 redirects", err.Error())
+	assertEqual(t, true, ("Get /redirect-11: stopped after 10 redirects" == err.Error() ||
+		"Get \"/redirect-11\": stopped after 10 redirects" == err.Error()))
 }
 
 func TestHostCheckRedirectPolicy(t *testing.T) {
@@ -941,6 +1008,64 @@ func TestPatchMethod(t *testing.T) {
 
 	resp.body = nil
 	assertEqual(t, "", resp.String())
+}
+
+func TestSendMethod(t *testing.T) {
+	ts := createGenServer(t)
+	defer ts.Close()
+
+	t.Run("send-get", func(t *testing.T) {
+		req := dclr()
+		req.Method = http.MethodGet
+		req.URL = ts.URL + "/gzip-test"
+
+		resp, err := req.Send()
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+
+		assertEqual(t, "This is Gzip response testing", resp.String())
+	})
+
+	t.Run("send-options", func(t *testing.T) {
+		req := dclr()
+		req.Method = http.MethodOptions
+		req.URL = ts.URL + "/options"
+
+		resp, err := req.Send()
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+
+		assertEqual(t, "", resp.String())
+		assertEqual(t, "x-go-resty-id", resp.Header().Get("Access-Control-Expose-Headers"))
+	})
+
+	t.Run("send-patch", func(t *testing.T) {
+		req := dclr()
+		req.Method = http.MethodPatch
+		req.URL = ts.URL + "/patch"
+
+		resp, err := req.Send()
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+
+		assertEqual(t, "", resp.String())
+	})
+
+	t.Run("send-put", func(t *testing.T) {
+		req := dclr()
+		req.Method = http.MethodPut
+		req.URL = ts.URL + "/plaintext"
+
+		resp, err := req.Send()
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+
+		assertEqual(t, "TestPut: plain text response", resp.String())
+	})
 }
 
 func TestRawFileUploadByBody(t *testing.T) {
@@ -1002,11 +1127,13 @@ func TestGetClient(t *testing.T) {
 func TestIncorrectURL(t *testing.T) {
 	c := dc()
 	_, err := c.R().Get("//not.a.user@%66%6f%6f.com/just/a/path/also")
-	assertEqual(t, true, strings.Contains(err.Error(), "parse //not.a.user@%66%6f%6f.com/just/a/path/also"))
+	assertEqual(t, true, (strings.Contains(err.Error(), "parse //not.a.user@%66%6f%6f.com/just/a/path/also") ||
+		strings.Contains(err.Error(), "parse \"//not.a.user@%66%6f%6f.com/just/a/path/also\"")))
 
 	c.SetHostURL("//not.a.user@%66%6f%6f.com")
 	_, err1 := c.R().Get("/just/a/path/also")
-	assertEqual(t, true, strings.Contains(err1.Error(), "parse //not.a.user@%66%6f%6f.com/just/a/path/also"))
+	assertEqual(t, true, (strings.Contains(err1.Error(), "parse //not.a.user@%66%6f%6f.com/just/a/path/also") ||
+		strings.Contains(err1.Error(), "parse \"//not.a.user@%66%6f%6f.com/just/a/path/also\"")))
 }
 
 func TestDetectContentTypeForPointer(t *testing.T) {
@@ -1349,7 +1476,6 @@ func TestReportMethodSupportsPayload(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
-
 }
 
 func TestRequestQueryStringOrder(t *testing.T) {
@@ -1476,6 +1602,8 @@ func TestTraceInfo(t *testing.T) {
 		assertEqual(t, true, tr.ServerTime >= 0)
 		assertEqual(t, true, tr.ResponseTime >= 0)
 		assertEqual(t, true, tr.TotalTime >= 0)
+		assertEqual(t, true, tr.TotalTime < time.Hour)
+		assertEqual(t, true, tr.TotalTime == resp.Time())
 	}
 
 	client.DisableTrace()
@@ -1492,8 +1620,130 @@ func TestTraceInfo(t *testing.T) {
 		assertEqual(t, true, tr.ServerTime >= 0)
 		assertEqual(t, true, tr.ResponseTime >= 0)
 		assertEqual(t, true, tr.TotalTime >= 0)
+		assertEqual(t, true, tr.TotalTime == resp.Time())
 	}
 
 	// for sake of hook funcs
 	_, _ = client.R().EnableTrace().Get("https://httpbin.org/get")
+}
+
+func TestTraceInfoWithoutEnableTrace(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	client := dc()
+	client.SetHostURL(ts.URL)
+	for _, u := range []string{"/", "/json", "/long-text", "/long-json"} {
+		resp, err := client.R().Get(u)
+		assertNil(t, err)
+		assertNotNil(t, resp)
+
+		tr := resp.Request.TraceInfo()
+		assertEqual(t, true, tr.DNSLookup == 0)
+		assertEqual(t, true, tr.ConnTime == 0)
+		assertEqual(t, true, tr.TLSHandshake == 0)
+		assertEqual(t, true, tr.ServerTime == 0)
+		assertEqual(t, true, tr.ResponseTime == 0)
+		assertEqual(t, true, tr.TotalTime == 0)
+	}
+}
+
+func TestTraceInfoOnTimeout(t *testing.T) {
+	client := dc()
+	client.SetHostURL("http://resty-nowhere.local").EnableTrace()
+
+	resp, err := client.R().Get("/")
+	assertNotNil(t, err)
+	assertNotNil(t, resp)
+
+	tr := resp.Request.TraceInfo()
+	assertEqual(t, true, tr.DNSLookup >= 0)
+	assertEqual(t, true, tr.ConnTime == 0)
+	assertEqual(t, true, tr.TLSHandshake == 0)
+	assertEqual(t, true, tr.TCPConnTime == 0)
+	assertEqual(t, true, tr.ServerTime == 0)
+	assertEqual(t, true, tr.ResponseTime == 0)
+	assertEqual(t, true, tr.TotalTime > 0)
+	assertEqual(t, true, tr.TotalTime == resp.Time())
+}
+
+func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
+	ts := createFilePostServer(t)
+	defer ts.Close()
+
+	debugBodySizeLimit := int64(512)
+
+	// upload an image with more than 512 bytes
+	output := bytes.NewBufferString("")
+	resp, err := New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetFile("file", filepath.Join(getTestDataPath(), "test-img.png")).
+		SetHeader("Content-Type", "image/png").
+		Post(ts.URL + "/upload")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), "REQUEST TOO LARGE"))
+
+	// upload a text file with no more than 512 bytes
+	output = bytes.NewBufferString("")
+	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetFile("file", filepath.Join(getTestDataPath(), "text-file.txt")).
+		SetHeader("Content-Type", "text/plain").
+		Post(ts.URL + "/upload")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), " THIS IS TEXT FILE FOR MULTIPART UPLOAD TEST "))
+
+	formTs := createFormPostServer(t)
+	defer formTs.Close()
+
+	// post form with more than 512 bytes data
+	output = bytes.NewBufferString("")
+	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetFormData(map[string]string{
+			"first_name": "Alex",
+			"last_name":  strings.Repeat("C", int(debugBodySizeLimit)),
+			"zip_code":   "00001",
+		}).
+		SetBasicAuth("myuser", "mypass").
+		Post(formTs.URL + "/profile")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), "REQUEST TOO LARGE"))
+
+	// post form with no more than 512 bytes data
+	output = bytes.NewBufferString("")
+	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetFormData(map[string]string{
+			"first_name": "Alex",
+			"last_name":  "C",
+			"zip_code":   "00001",
+		}).
+		SetBasicAuth("myuser", "mypass").
+		Post(formTs.URL + "/profile")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), "Alex"))
+
+	// post string with more than 512 bytes data
+	output = bytes.NewBufferString("")
+	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetBody(`{
+			"first_name": "Alex",
+			"last_name": "`+strings.Repeat("C", int(debugBodySizeLimit))+`C",
+			"zip_code": "00001"}`).
+		SetBasicAuth("myuser", "mypass").
+		Post(formTs.URL + "/profile")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), "REQUEST TOO LARGE"))
+
+	// post slice with more than 512 bytes data
+	output = bytes.NewBufferString("")
+	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetBody([]string{strings.Repeat("C", int(debugBodySizeLimit))}).
+		SetBasicAuth("myuser", "mypass").
+		Post(formTs.URL + "/profile")
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, true, strings.Contains(output.String(), "REQUEST TOO LARGE"))
 }
