@@ -54,6 +54,7 @@ var (
 	hdrContentLengthKey   = http.CanonicalHeaderKey("Content-Length")
 	hdrContentEncodingKey = http.CanonicalHeaderKey("Content-Encoding")
 	hdrAuthorizationKey   = http.CanonicalHeaderKey("Authorization")
+	hdrLocationKey        = http.CanonicalHeaderKey("Location")
 
 	plainTextType   = "text/plain; charset=utf-8"
 	jsonContentType = "application/json"
@@ -795,16 +796,16 @@ func (c *Client) execute(req *Request) (*Response, error) {
 	// Apply Request middleware
 	var err error
 
-	// user defined on before request methods
-	// to modify the *resty.Request object
-	for _, f := range c.udBeforeRequest {
+	// resty middlewares
+	for _, f := range c.beforeRequest {
 		if err = f(c, req); err != nil {
 			return nil, wrapNoRetryErr(err)
 		}
 	}
 
-	// resty middlewares
-	for _, f := range c.beforeRequest {
+	// user defined on before request methods
+	// to modify the *resty.Request object
+	for _, f := range c.udBeforeRequest {
 		if err = f(c, req); err != nil {
 			return nil, wrapNoRetryErr(err)
 		}
@@ -859,9 +860,10 @@ func (c *Client) execute(req *Request) (*Response, error) {
 			return response, err
 		}
 
-		response.setReceivedAt() // after we read the body
 		response.size = int64(len(response.body))
 	}
+
+	response.setReceivedAt() // after we read the body
 
 	// Apply Response middleware
 	for _, f := range c.afterResponse {

@@ -7,6 +7,8 @@ package resty
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/xml"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net"
@@ -314,6 +316,32 @@ func TestPostJSONMapInvalidResponseJson(t *testing.T) {
 	logResponse(t, resp)
 }
 
+type brokenMarshalJSON struct{}
+
+func (b brokenMarshalJSON) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("b0rk3d")
+}
+
+func TestPostJSONMarshalError(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	b := brokenMarshalJSON{}
+	exp := "b0rk3d"
+
+	_, err := dclr().
+		SetHeader(hdrContentTypeKey, "application/json").
+		SetBody(b).
+		Post(ts.URL + "/login")
+	if err == nil {
+		t.Fatalf("expected error but got %v", err)
+	}
+
+	if !strings.Contains(err.Error(), exp) {
+		t.Errorf("expected error string %q to contain %q", err, exp)
+	}
+}
+
 func TestForceContentTypeForGH276andGH240(t *testing.T) {
 	ts := createPostServer(t)
 	defer ts.Close()
@@ -359,6 +387,32 @@ func TestPostXMLStringSuccess(t *testing.T) {
 	assertEqual(t, http.StatusOK, resp.StatusCode())
 
 	logResponse(t, resp)
+}
+
+type brokenMarshalXML struct{}
+
+func (b brokenMarshalXML) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	return errors.New("b0rk3d")
+}
+
+func TestPostXMLMarshalError(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	b := brokenMarshalXML{}
+	exp := "b0rk3d"
+
+	_, err := dclr().
+		SetHeader(hdrContentTypeKey, "application/xml").
+		SetBody(b).
+		Post(ts.URL + "/login")
+	if err == nil {
+		t.Fatalf("expected error but got %v", err)
+	}
+
+	if !strings.Contains(err.Error(), exp) {
+		t.Errorf("expected error string %q to contain %q", err, exp)
+	}
 }
 
 func TestPostXMLStringError(t *testing.T) {
@@ -1312,6 +1366,7 @@ func TestOutputFileWithBaseDirAndRelativePath(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, true, resp.Size() != 0)
+	assertEqual(t, true, resp.Time() > 0)
 }
 
 func TestOutputFileWithBaseDirError(t *testing.T) {
@@ -1336,6 +1391,7 @@ func TestOutputPathDirNotExists(t *testing.T) {
 
 	assertError(t, err)
 	assertEqual(t, true, resp.Size() != 0)
+	assertEqual(t, true, resp.Time() > 0)
 }
 
 func TestOutputFileAbsPath(t *testing.T) {
@@ -1588,6 +1644,8 @@ func TestTraceInfo(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
 
+	serverAddr := ts.URL[strings.LastIndex(ts.URL, "/")+1:]
+
 	client := dc()
 	client.SetHostURL(ts.URL).EnableTrace()
 	for _, u := range []string{"/", "/json", "/long-text", "/long-json"} {
@@ -1604,6 +1662,7 @@ func TestTraceInfo(t *testing.T) {
 		assertEqual(t, true, tr.TotalTime >= 0)
 		assertEqual(t, true, tr.TotalTime < time.Hour)
 		assertEqual(t, true, tr.TotalTime == resp.Time())
+		assertEqual(t, tr.RemoteAddr.String(), serverAddr)
 	}
 
 	client.DisableTrace()
@@ -1621,6 +1680,7 @@ func TestTraceInfo(t *testing.T) {
 		assertEqual(t, true, tr.ResponseTime >= 0)
 		assertEqual(t, true, tr.TotalTime >= 0)
 		assertEqual(t, true, tr.TotalTime == resp.Time())
+		assertEqual(t, tr.RemoteAddr.String(), serverAddr)
 	}
 
 	// for sake of hook funcs
@@ -1746,4 +1806,38 @@ func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
 	assertNil(t, err)
 	assertNotNil(t, resp)
 	assertEqual(t, true, strings.Contains(output.String(), "REQUEST TOO LARGE"))
+}
+
+func TestPostMapTemporaryRedirect(t *testing.T)  {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	c := dc()
+	resp, err := c.R().SetBody(map[string]string{"username":"testuser", "password": "testpass"}).
+		Post(ts.URL + "/redirect")
+
+	assertNil(t, err)
+	assertNotNil(t, resp)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+}
+
+type brokenReadCloser struct{}
+
+func (b brokenReadCloser) Read(p []byte) (n int, err error) {
+	return 0, errors.New("read error")
+}
+
+func (b brokenReadCloser) Close() error {
+	return nil
+}
+
+func TestPostBodyError(t *testing.T)  {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	c := dc()
+	resp, err := c.R().SetBody(brokenReadCloser{}).Post(ts.URL + "/redirect")
+	assertNotNil(t, err)
+	assertEqual(t, "read error", err.Error())
+	assertNil(t, resp)
 }
