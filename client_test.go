@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -253,6 +253,18 @@ func TestClientOnBeforeRequestModification(t *testing.T) {
 	logResponse(t, resp)
 }
 
+func TestClientSetHeaderVerbatim(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	c := dc().
+		SetHeaderVerbatim("header-lowercase", "value_lowercase").
+		SetHeader("header-lowercase", "value_standard")
+
+	assertEqual(t, "value_lowercase", strings.Join(c.Header["header-lowercase"], "")) //nolint
+	assertEqual(t, "value_standard", c.Header.Get("Header-Lowercase"))
+}
+
 func TestClientSetTransport(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
@@ -351,6 +363,11 @@ func TestClientOptions(t *testing.T) {
 	mrwt := time.Duration(2) * time.Second
 	client.SetRetryMaxWaitTime(mrwt)
 	assertEqual(t, mrwt, client.RetryMaxWaitTime)
+
+	client.AddRetryAfterErrorCondition()
+	equal(client.RetryConditions[0], func(response *Response, err error) bool {
+		return response.IsError()
+	})
 
 	err := &AuthError{}
 	client.SetError(err)
@@ -589,6 +606,7 @@ func TestLogCallbacks(t *testing.T) {
 		Get(ts.URL + "/profile")
 	assertEqual(t, errors.New("request test error"), err)
 	assertNil(t, resp)
+	assertNotNil(t, err)
 
 	c.OnRequestLog(nil)
 	c.OnResponseLog(func(r *ResponseLog) error { return errors.New("response test error") })

@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -46,6 +46,16 @@ func TestGet(t *testing.T) {
 	assertEqual(t, "TestGet: text response", resp.String())
 
 	logResponse(t, resp)
+}
+
+func TestIllegalRetryCount(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	resp, err := dc().SetRetryCount(-1).R().Get(ts.URL + "/")
+
+	assertNil(t, err)
+	assertNil(t, resp)
 }
 
 func TestGetCustomUserAgent(t *testing.T) {
@@ -1347,6 +1357,18 @@ func TestSetQueryStringTypical(t *testing.T) {
 	assertEqual(t, http.StatusOK, resp.StatusCode())
 	assertEqual(t, "200 OK", resp.Status())
 	assertEqual(t, "TestGet: text response", resp.String())
+}
+
+func TestSetHeaderVerbatim(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	r := dclr().
+		SetHeaderVerbatim("header-lowercase", "value_lowercase").
+		SetHeader("header-lowercase", "value_standard")
+
+	assertEqual(t, "value_lowercase", strings.Join(r.Header["header-lowercase"], "")) //nolint
+	assertEqual(t, "value_standard", r.Header.Get("Header-Lowercase"))
 }
 
 func TestOutputFileWithBaseDirAndRelativePath(t *testing.T) {

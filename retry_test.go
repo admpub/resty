@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2020 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -72,6 +72,23 @@ func TestConditionalBackoffConditionNonExecution(t *testing.T) {
 		counter++
 		return nil, nil
 	}, RetryConditions([]RetryConditionFunc{filler}))
+
+	assertError(t, retryErr)
+	assertNotEqual(t, counter, attempts)
+}
+
+// Check to make sure that RetryHooks are executed
+func TestOnRetryBackoff(t *testing.T) {
+	attempts := 3
+	counter := 0
+
+	hook := func(r *Response, err error) {
+		counter++
+	}
+
+	retryErr := Backoff(func() (*Response, error) {
+		return nil, nil
+	}, RetryHooks([]OnRetryFunc{hook}))
 
 	assertError(t, retryErr)
 	assertNotEqual(t, counter, attempts)
@@ -621,6 +638,60 @@ func TestClientRetryCount(t *testing.T) {
 
 	// 2 attempts were made
 	assertEqual(t, attempt, 2)
+
+	assertEqual(t, true, (strings.HasPrefix(err.Error(), "Get "+ts.URL+"/set-retrycount-test") ||
+		strings.HasPrefix(err.Error(), "Get \""+ts.URL+"/set-retrycount-test\"")))
+}
+
+func TestClientErrorRetry(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	c := dc().
+		SetTimeout(time.Second * 3).
+		SetRetryCount(1).
+		AddRetryAfterErrorCondition()
+
+	resp, err := c.R().
+		SetHeader(hdrContentTypeKey, "application/json; charset=utf-8").
+		SetJSONEscapeHTML(false).
+		SetResult(AuthSuccess{}).
+		Get(ts.URL + "/set-retry-error-recover")
+
+	assertError(t, err)
+
+	authSuccess := resp.Result().(*AuthSuccess)
+
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "hello", authSuccess.Message)
+
+	assertNil(t, resp.Error())
+}
+
+func TestClientRetryHook(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	attempt := 0
+
+	c := dc().
+		SetRetryCount(2).
+		SetTimeout(time.Second * 3).
+		AddRetryHook(
+			func(r *Response, _ error) {
+				attempt++
+			},
+		)
+
+	resp, err := c.R().Get(ts.URL + "/set-retrycount-test")
+	assertEqual(t, "", resp.Status())
+	assertEqual(t, "", resp.Proto())
+	assertEqual(t, 0, resp.StatusCode())
+	assertEqual(t, 0, len(resp.Cookies()))
+	assertNotNil(t, resp.Body())
+	assertEqual(t, 0, len(resp.Header()))
+
+	assertEqual(t, 3, attempt)
 
 	assertEqual(t, true, (strings.HasPrefix(err.Error(), "Get "+ts.URL+"/set-retrycount-test") ||
 		strings.HasPrefix(err.Error(), "Get \""+ts.URL+"/set-retrycount-test\"")))
