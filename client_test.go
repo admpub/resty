@@ -9,14 +9,16 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -204,7 +206,7 @@ func TestClientSetRootCertificateNotExists(t *testing.T) {
 
 func TestClientSetRootCertificateFromString(t *testing.T) {
 	client := dc()
-	rootPemData, err := ioutil.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
+	rootPemData, err := os.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
 	assertNil(t, err)
 
 	client.SetRootCertificateFromString(string(rootPemData))
@@ -217,9 +219,9 @@ func TestClientSetRootCertificateFromString(t *testing.T) {
 
 func TestClientSetRootCertificateFromStringErrorTls(t *testing.T) {
 	client := NewWithClient(&http.Client{})
-	client.outputLogTo(ioutil.Discard)
+	client.outputLogTo(io.Discard)
 
-	rootPemData, err := ioutil.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
+	rootPemData, err := os.ReadFile(filepath.Join(getTestDataPath(), "sample-root.pem"))
 	assertNil(t, err)
 	rt := &CustomRoundTripper{}
 	client.SetTransport(rt)
@@ -426,7 +428,7 @@ func TestClientPreRequestHook(t *testing.T) {
 		// Reading Request `N` no of times
 		for i := 0; i < 5; i++ {
 			b, _ := r.GetBody()
-			rb, _ := ioutil.ReadAll(b)
+			rb, _ := io.ReadAll(b)
 			c.log.Debugf("%s %v", string(rb), len(rb))
 			assertEqual(t, true, len(rb) >= 45)
 		}
@@ -468,9 +470,24 @@ func TestClientAllowsGetMethodPayload(t *testing.T) {
 	assertEqual(t, payload, resp.String())
 }
 
+func TestClientAllowsGetMethodPayloadDisabled(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	c := dc()
+	c.SetAllowGetMethodPayload(false)
+
+	payload := bytes.NewReader([]byte("test-payload"))
+	resp, err := c.R().SetBody(payload).Get(ts.URL + "/get-method-payload-test")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "", resp.String())
+}
+
 func TestClientRoundTripper(t *testing.T) {
 	c := NewWithClient(&http.Client{})
-	c.outputLogTo(ioutil.Discard)
+	c.outputLogTo(io.Discard)
 
 	rt := &CustomRoundTripper{}
 	c.SetTransport(rt)
@@ -491,6 +508,38 @@ func TestClientNewRequest(t *testing.T) {
 	c := New()
 	request := c.NewRequest()
 	assertNotNil(t, request)
+}
+
+func TestClientSetJSONMarshaler(t *testing.T) {
+	m := func(v interface{}) ([]byte, error) { return nil, nil }
+	c := New().SetJSONMarshaler(m)
+	p1 := fmt.Sprintf("%p", c.JSONMarshal)
+	p2 := fmt.Sprintf("%p", m)
+	assertEqual(t, p1, p2) // functions can not be compared, we only can compare pointers
+}
+
+func TestClientSetJSONUnmarshaler(t *testing.T) {
+	m := func([]byte, interface{}) error { return nil }
+	c := New().SetJSONUnmarshaler(m)
+	p1 := fmt.Sprintf("%p", c.JSONUnmarshal)
+	p2 := fmt.Sprintf("%p", m)
+	assertEqual(t, p1, p2) // functions can not be compared, we only can compare pointers
+}
+
+func TestClientSetXMLMarshaler(t *testing.T) {
+	m := func(v interface{}) ([]byte, error) { return nil, nil }
+	c := New().SetXMLMarshaler(m)
+	p1 := fmt.Sprintf("%p", c.XMLMarshal)
+	p2 := fmt.Sprintf("%p", m)
+	assertEqual(t, p1, p2) // functions can not be compared, we only can compare pointers
+}
+
+func TestClientSetXMLUnmarshaler(t *testing.T) {
+	m := func([]byte, interface{}) error { return nil }
+	c := New().SetXMLUnmarshaler(m)
+	p1 := fmt.Sprintf("%p", c.XMLUnmarshal)
+	p2 := fmt.Sprintf("%p", m)
+	assertEqual(t, p1, p2) // functions can not be compared, we only can compare pointers
 }
 
 func TestDebugBodySizeLimit(t *testing.T) {
@@ -639,6 +688,7 @@ func TestClientOnResponseError(t *testing.T) {
 		setup       func(*Client)
 		isError     bool
 		hasResponse bool
+		panics      bool
 	}{
 		{
 			name: "successful_request",
@@ -687,6 +737,28 @@ func TestClientOnResponseError(t *testing.T) {
 			isError:     true,
 			hasResponse: true,
 		},
+		{
+			name: "panic with error",
+			setup: func(client *Client) {
+				client.OnBeforeRequest(func(client *Client, request *Request) error {
+					panic(fmt.Errorf("before request"))
+				})
+			},
+			isError:     false,
+			hasResponse: false,
+			panics:      true,
+		},
+		{
+			name: "panic with string",
+			setup: func(client *Client) {
+				client.OnBeforeRequest(func(client *Client, request *Request) error {
+					panic("before request")
+				})
+			},
+			isError:     false,
+			hasResponse: false,
+			panics:      true,
+		},
 	}
 
 	for _, test := range tests {
@@ -700,8 +772,17 @@ func TestClientOnResponseError(t *testing.T) {
 					assertNotNil(t, v.Err)
 				}
 			}
-			var hook1, hook2 int
-			c := New().outputLogTo(ioutil.Discard).
+			var hook1, hook2, hook3, hook4, hook5, hook6 int
+			defer func() {
+				if rec := recover(); rec != nil {
+					assertEqual(t, true, test.panics)
+					assertEqual(t, 0, hook1)
+					assertEqual(t, 0, hook3)
+					assertEqual(t, 1, hook5)
+					assertEqual(t, 1, hook6)
+				}
+			}()
+			c := New().outputLogTo(io.Discard).
 				SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
 				SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF").
 				SetRetryCount(0).
@@ -719,6 +800,24 @@ func TestClientOnResponseError(t *testing.T) {
 				OnError(func(r *Request, err error) {
 					assertErrorHook(r, err)
 					hook2++
+				}).
+				OnPanic(func(r *Request, err error) {
+					assertErrorHook(r, err)
+					hook5++
+				}).
+				OnPanic(func(r *Request, err error) {
+					assertErrorHook(r, err)
+					hook6++
+				}).
+				OnSuccess(func(c *Client, resp *Response) {
+					assertNotNil(t, c)
+					assertNotNil(t, resp)
+					hook3++
+				}).
+				OnSuccess(func(c *Client, resp *Response) {
+					assertNotNil(t, c)
+					assertNotNil(t, resp)
+					hook4++
 				})
 			if test.setup != nil {
 				test.setup(c)
@@ -728,8 +827,14 @@ func TestClientOnResponseError(t *testing.T) {
 				assertNotNil(t, err)
 				assertEqual(t, 1, hook1)
 				assertEqual(t, 1, hook2)
+				assertEqual(t, 0, hook3)
+				assertEqual(t, 0, hook5)
 			} else {
 				assertError(t, err)
+				assertEqual(t, 0, hook1)
+				assertEqual(t, 1, hook3)
+				assertEqual(t, 1, hook4)
+				assertEqual(t, 0, hook5)
 			}
 		})
 	}
@@ -786,4 +891,28 @@ func TestHostURLForGH318AndGH407(t *testing.T) {
 		Post("/login")
 	assertNil(t, err)
 	assertNotNil(t, resp)
+}
+
+func TestPostRedirectWithBody(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	targetURL, _ := url.Parse(ts.URL)
+	t.Log("ts.URL:", ts.URL)
+	t.Log("targetURL.Host:", targetURL.Host)
+
+	c := dc()
+	wg := sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := c.R().
+				SetBody([]byte(strconv.Itoa(newRnd().Int()))).
+				Post(targetURL.String() + "/redirect-with-body")
+			assertError(t, err)
+			assertNotNil(t, resp)
+		}()
+	}
+	wg.Wait()
 }

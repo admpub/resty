@@ -11,9 +11,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,12 +99,12 @@ func createGetServer(t *testing.T) *httptest.Server {
 				time.Sleep(time.Second * 6)
 				_, _ = w.Write([]byte("TestClientTimeout page"))
 			case "/my-image.png":
-				fileBytes, _ := ioutil.ReadFile(filepath.Join(getTestDataPath(), "test-img.png"))
+				fileBytes, _ := os.ReadFile(filepath.Join(getTestDataPath(), "test-img.png"))
 				w.Header().Set("Content-Type", "image/png")
 				w.Header().Set("Content-Length", strconv.Itoa(len(fileBytes)))
 				_, _ = w.Write(fileBytes)
 			case "/get-method-payload-test":
-				body, err := ioutil.ReadAll(r.Body)
+				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Errorf("Error: could not read get body: %s", err.Error())
 				}
@@ -240,19 +240,17 @@ func createPostServer(t *testing.T) *httptest.Server {
 			handleLoginEndpoint(t, w, r)
 
 			handleUsersEndpoint(t, w, r)
-
-			if r.URL.Path == "/login-json-html" {
+			switch r.URL.Path {
+			case "/login-json-html":
 				w.Header().Set(hdrContentTypeKey, "text/html")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`<htm><body>Test JSON request with HTML response</body></html>`))
 				return
-			}
-
-			if r.URL.Path == "/usersmap" {
+			case "/usersmap":
 				// JSON
 				if IsJSONType(r.Header.Get(hdrContentTypeKey)) {
 					if r.URL.Query().Get("status") == "500" {
-						body, err := ioutil.ReadAll(r.Body)
+						body, err := io.ReadAll(r.Body)
 						if err != nil {
 							t.Errorf("Error: could not read post body: %s", err.Error())
 						}
@@ -287,9 +285,19 @@ func createPostServer(t *testing.T) *httptest.Server {
 
 					return
 				}
-			} else if r.URL.Path == "/redirect" {
+			case "/redirect":
 				w.Header().Set(hdrLocationKey, "/login")
 				w.WriteHeader(http.StatusTemporaryRedirect)
+			case "/redirect-with-body":
+				body, _ := io.ReadAll(r.Body)
+				query := url.Values{}
+				query.Add("body", string(body))
+				w.Header().Set(hdrLocationKey, "/redirected-with-body?"+query.Encode())
+				w.WriteHeader(http.StatusTemporaryRedirect)
+			case "/redirected-with-body":
+				body, _ := io.ReadAll(r.Body)
+				assertEqual(t, r.URL.Query().Get("body"), string(body))
+				w.WriteHeader(http.StatusOK)
 			}
 		}
 	})
@@ -362,6 +370,54 @@ func createFormPostServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
+func createFormPatchServer(t *testing.T) *httptest.Server {
+	ts := createTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Method: %v", r.Method)
+		t.Logf("Path: %v", r.URL.Path)
+		t.Logf("Content-Type: %v", r.Header.Get(hdrContentTypeKey))
+
+		if r.Method == MethodPatch {
+			_ = r.ParseMultipartForm(10e6)
+
+			if r.URL.Path == "/upload" {
+				t.Logf("FirstName: %v", r.FormValue("first_name"))
+				t.Logf("LastName: %v", r.FormValue("last_name"))
+
+				targetPath := filepath.Join(getTestDataPath(), "upload")
+				_ = os.MkdirAll(targetPath, 0700)
+
+				for _, fhdrs := range r.MultipartForm.File {
+					for _, hdr := range fhdrs {
+						t.Logf("Name: %v", hdr.Filename)
+						t.Logf("Header: %v", hdr.Header)
+						dotPos := strings.LastIndex(hdr.Filename, ".")
+
+						fname := fmt.Sprintf("%s-%v%s", hdr.Filename[:dotPos], time.Now().Unix(), hdr.Filename[dotPos:])
+						t.Logf("Write name: %v", fname)
+
+						infile, _ := hdr.Open()
+						f, err := os.OpenFile(filepath.Join(targetPath, fname), os.O_WRONLY|os.O_CREATE, 0666)
+						if err != nil {
+							t.Logf("Error: %v", err)
+							return
+						}
+						defer func() {
+							_ = f.Close()
+						}()
+						_, _ = io.Copy(f, infile)
+
+						_, _ = w.Write([]byte(fmt.Sprintf("File: %v, uploaded as: %v\n", hdr.Filename, fname)))
+					}
+				}
+
+				return
+			}
+		}
+	})
+
+	return ts
+}
+
 func createFilePostServer(t *testing.T) *httptest.Server {
 	ts := createTestServer(func(w http.ResponseWriter, r *http.Request) {
 		t.Logf("Method: %v", r.Method)
@@ -393,6 +449,10 @@ func createFilePostServer(t *testing.T) *httptest.Server {
 			size, _ := io.Copy(f, r.Body)
 
 			fmt.Fprintf(w, "File Uploaded successfully, file size: %v", size)
+		case "/set-reset-multipart-readers-test":
+			w.Header().Set(hdrContentTypeKey, "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, `{ "message": "error" }`)
 		}
 	})
 
@@ -400,7 +460,11 @@ func createFilePostServer(t *testing.T) *httptest.Server {
 }
 
 func createAuthServer(t *testing.T) *httptest.Server {
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return createAuthServerTLSOptional(t, true)
+}
+
+func createAuthServerTLSOptional(t *testing.T, useTLS bool) *httptest.Server {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Logf("Method: %v", r.Method)
 		t.Logf("Path: %v", r.URL.Path)
 		t.Logf("Content-Type: %v", r.Header.Get(hdrContentTypeKey))
@@ -450,9 +514,11 @@ func createAuthServer(t *testing.T) *httptest.Server {
 
 			return
 		}
-	}))
-
-	return ts
+	})
+	if useTLS {
+		return httptest.NewTLSServer(handler)
+	}
+	return httptest.NewServer(handler)
 }
 
 func createGenServer(t *testing.T) *httptest.Server {
@@ -515,7 +581,7 @@ func createGenServer(t *testing.T) *httptest.Server {
 		}
 
 		if r.Method == "REPORT" && r.URL.Path == "/report" {
-			body, _ := ioutil.ReadAll(r.Body)
+			body, _ := io.ReadAll(r.Body)
 			if len(body) == 0 {
 				w.WriteHeader(http.StatusOK)
 			}
@@ -561,14 +627,14 @@ func createTestServer(fn func(w http.ResponseWriter, r *http.Request)) *httptest
 
 func dc() *Client {
 	c := New().
-		outputLogTo(ioutil.Discard)
+		outputLogTo(io.Discard)
 	return c
 }
 
 func dcl() *Client {
 	c := New().
 		SetDebug(true).
-		outputLogTo(ioutil.Discard)
+		outputLogTo(io.Discard)
 	return c
 }
 
@@ -579,7 +645,7 @@ func dcr() *Request {
 func dclr() *Request {
 	c := dc().
 		SetDebug(true).
-		outputLogTo(ioutil.Discard)
+		outputLogTo(io.Discard)
 	return c.R()
 }
 
