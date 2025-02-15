@@ -3,14 +3,19 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - v2
     paths-ignore:
       - '**.md'
+      - '**.bazel'
+      - 'WORKSPACE'
   pull_request:
     branches:
-      - master
+      - main
+      - v2
     paths-ignore:
       - '**.md'
+      - '**.bazel'
+      - 'WORKSPACE'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -20,22 +25,31 @@ jobs:
     name: Build
     strategy:
       matrix:
-        go: [ '1.20.x', '1.19.x' ]
+        go: [ 'stable', '1.20.x' ]
         os: [ ubuntu-latest ]
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Format
+        run: diff -u <(echo -n) <(go fmt $(go list ./...))
 
       - name: Test
-        run: go test ./... -race -coverprofile=coverage.txt -covermode=atomic
+        run: go test ./... -race -coverprofile=coverage.txt -covermode=atomic -coverpkg=./...
 
-      - name: Coverage
-        run: bash <(curl -s https://codecov.io/bash)
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

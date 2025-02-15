@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2024 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -6,6 +6,7 @@ package resty
 
 import (
 	"bytes"
+	"errors"
 	"mime/multipart"
 	"testing"
 )
@@ -23,20 +24,18 @@ func TestIsJSONType(t *testing.T) {
 		{"application/vnd.foo+json; charset=utf-8", true},
 
 		{"text/json", true},
-		{"text/xml+json", true},
 		{"text/vnd.foo+json", true},
 
-		{"application/foo-json", false},
-		{"application/foo.json", false},
-		{"application/vnd.foo-json", false},
-		{"application/vnd.foo.json", false},
-		{"application/json+xml", false},
+		{"application/foo-json", true},
+		{"application/foo.json", true},
+		{"application/vnd.foo-json", true},
+		{"application/vnd.foo.json", true},
+		{"application/x-amz-json-1.1", true},
 
-		{"text/foo-json", false},
-		{"text/foo.json", false},
-		{"text/vnd.foo-json", false},
-		{"text/vnd.foo.json", false},
-		{"text/json+xml", false},
+		{"text/foo-json", true},
+		{"text/foo.json", true},
+		{"text/vnd.foo-json", true},
+		{"text/vnd.foo.json", true},
 	} {
 		result := IsJSONType(test.input)
 
@@ -52,27 +51,23 @@ func TestIsXMLType(t *testing.T) {
 		expect bool
 	}{
 		{"application/xml", true},
-		{"application/json+xml", true},
 		{"application/vnd.foo+xml", true},
 
 		{"application/xml; charset=utf-8", true},
 		{"application/vnd.foo+xml; charset=utf-8", true},
 
 		{"text/xml", true},
-		{"text/json+xml", true},
 		{"text/vnd.foo+xml", true},
 
-		{"application/foo-xml", false},
-		{"application/foo.xml", false},
-		{"application/vnd.foo-xml", false},
-		{"application/vnd.foo.xml", false},
-		{"application/xml+json", false},
+		{"application/foo-xml", true},
+		{"application/foo.xml", true},
+		{"application/vnd.foo-xml", true},
+		{"application/vnd.foo.xml", true},
 
-		{"text/foo-xml", false},
-		{"text/foo.xml", false},
-		{"text/vnd.foo-xml", false},
-		{"text/vnd.foo.xml", false},
-		{"text/xml+json", false},
+		{"text/foo-xml", true},
+		{"text/foo.xml", true},
+		{"text/vnd.foo-xml", true},
+		{"text/vnd.foo.xml", true},
 	} {
 		result := IsXMLType(test.input)
 
@@ -94,4 +89,19 @@ func TestWriteMultipartFormFileReaderError(t *testing.T) {
 	err := writeMultipartFormFile(nil, "", "", &brokenReadCloser{})
 	assertNotNil(t, err)
 	assertEqual(t, "read error", err.Error())
+}
+
+func TestRestyErrorFuncs(t *testing.T) {
+	ne1 := errors.New("new error 1")
+	nie1 := errors.New("inner error 1")
+
+	e := wrapErrors(ne1, nie1)
+	assertEqual(t, "new error 1", e.Error())
+	assertEqual(t, "inner error 1", errors.Unwrap(e).Error())
+
+	e = wrapErrors(ne1, nil)
+	assertEqual(t, "new error 1", e.Error())
+
+	e = wrapErrors(nil, nie1)
+	assertEqual(t, "inner error 1", e.Error())
 }

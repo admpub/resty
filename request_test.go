@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2024 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -12,13 +12,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 type AuthSuccess struct {
@@ -45,6 +49,63 @@ func TestGet(t *testing.T) {
 	assertEqual(t, "TestGet: text response", resp.String())
 
 	logResponse(t, resp)
+}
+
+func TestGetGH524(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	resp, err := dc().R().
+		SetPathParams((map[string]string{
+			"userId":       "sample@sample.com",
+			"subAccountId": "100002",
+			"path":         "groups/developers",
+		})).
+		SetQueryParam("request_no", strconv.FormatInt(time.Now().Unix(), 10)).
+		SetDebug(true).
+		Get(ts.URL + "/v1/users/{userId}/{subAccountId}/{path}/details")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, resp.Request.Header.Get("Content-Type"), "") //  unable to reproduce reported issue
+}
+
+func TestRateLimiter(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	// Test a burst with a valid capacity and then a consecutive request that must fail.
+
+	// Allow a rate of 1 every 100 ms but also allow bursts of 10 requests.
+	client := dc().SetRateLimiter(rate.NewLimiter(rate.Every(100*time.Millisecond), 10))
+
+	// Execute a burst of 10 requests.
+	for i := 0; i < 10; i++ {
+		resp, err := client.R().
+			SetQueryParam("request_no", strconv.Itoa(i)).Get(ts.URL + "/")
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+	}
+	// Next request issued directly should fail because burst of 10 has been consumed.
+	{
+		_, err := client.R().
+			SetQueryParam("request_no", strconv.Itoa(11)).Get(ts.URL + "/")
+		assertErrorIs(t, ErrRateLimitExceeded, err)
+	}
+
+	// Test continues request at a valid rate
+
+	// Allow a rate of 1 every ms with no burst.
+	client = dc().SetRateLimiter(rate.NewLimiter(rate.Every(1*time.Millisecond), 1))
+
+	// Sending requests every ms+tiny delta must succeed.
+	for i := 0; i < 100; i++ {
+		resp, err := client.R().
+			SetQueryParam("request_no", strconv.Itoa(i)).Get(ts.URL + "/")
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+		time.Sleep(1*time.Millisecond + 100*time.Microsecond)
+	}
 }
 
 func TestIllegalRetryCount(t *testing.T) {
@@ -620,13 +681,116 @@ func TestRequestAuthScheme(t *testing.T) {
 		SetAuthScheme("OAuth").
 		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF")
 
-	resp, err := c.R().
-		SetAuthScheme("Bearer").
-		SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF-Request").
-		Get(ts.URL + "/profile")
+	t.Run("override auth scheme", func(t *testing.T) {
+		resp, err := c.R().
+			SetAuthScheme("Bearer").
+			SetAuthToken("004DDB79-6801-4587-B976-F093E6AC44FF-Request").
+			Get(ts.URL + "/profile")
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+	})
+
+	t.Run("empty auth scheme at client level GH954", func(t *testing.T) {
+		tokenValue := "004DDB79-6801-4587-B976-F093E6AC44FF"
+
+		// set client level
+		c.SetAuthScheme("").
+			SetAuthToken(tokenValue)
+
+		resp, err := c.R().
+			Get(ts.URL + "/profile")
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+		assertEqual(t, tokenValue, resp.Request.Header.Get(hdrAuthorizationKey))
+	})
+
+	t.Run("empty auth scheme at request level GH954", func(t *testing.T) {
+		tokenValue := "004DDB79-6801-4587-B976-F093E6AC44FF"
+
+		// set client level
+		c := dc().
+			SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+			SetAuthToken(tokenValue)
+
+		resp, err := c.R().
+			SetAuthScheme("").
+			Get(ts.URL + "/profile")
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+		assertEqual(t, tokenValue, resp.Request.Header.Get(hdrAuthorizationKey))
+	})
+
+	t.Run("only client level auth token GH959", func(t *testing.T) {
+		tokenValue := "004DDB79-6801-4587-B976-F093E6AC44FF"
+
+		c := dc().
+			SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+			SetAuthToken(tokenValue)
+
+		resp, err := c.R().
+			Get(ts.URL + "/profile")
+
+		assertError(t, err)
+		assertEqual(t, http.StatusOK, resp.StatusCode())
+		assertEqual(t, "Bearer "+tokenValue, resp.Request.Header.Get(hdrAuthorizationKey))
+	})
+
+}
+
+func TestRequestDigestAuth(t *testing.T) {
+	conf := defaultDigestServerConf()
+	ts := createDigestServer(t, nil)
+	defer ts.Close()
+
+	resp, err := dclr().
+		SetDigestAuth(conf.username, conf.password).
+		SetResult(&AuthSuccess{}).
+		Get(ts.URL + conf.uri)
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
+
+	t.Logf("Result Success: %q", resp.Result().(*AuthSuccess))
+	logResponse(t, resp)
+}
+
+func TestRequestDigestAuthFail(t *testing.T) {
+	conf := defaultDigestServerConf()
+	ts := createDigestServer(t, nil)
+	defer ts.Close()
+
+	resp, err := dclr().
+		SetDigestAuth(conf.username, "wrongPassword").
+		SetError(AuthError{}).
+		Get(ts.URL + conf.uri)
+
+	assertError(t, err)
+	assertEqual(t, http.StatusUnauthorized, resp.StatusCode())
+
+	t.Logf("Result Error: %q", resp.Error().(*AuthError))
+	logResponse(t, resp)
+}
+
+func TestRequestDigestAuthWithBody(t *testing.T) {
+	conf := defaultDigestServerConf()
+	ts := createDigestServer(t, nil)
+	defer ts.Close()
+
+	resp, err := dclr().
+		SetDigestAuth(conf.username, conf.password).
+		SetResult(&AuthSuccess{}).
+		SetHeader(hdrContentTypeKey, "application/json").
+		SetBody(map[string]interface{}{"zip_code": "00000", "city": "Los Angeles"}).
+		Post(ts.URL + conf.uri)
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+
+	t.Logf("Result Success: %q", resp.Result().(*AuthSuccess))
+	logResponse(t, resp)
 }
 
 func TestFormData(t *testing.T) {
@@ -677,11 +841,11 @@ func TestFormDataDisableWarn(t *testing.T) {
 	c := dc()
 	c.SetFormData(map[string]string{"zip_code": "00000", "city": "Los Angeles"}).
 		SetContentLength(true).
-		SetDebug(true).
 		SetDisableWarn(true)
 	c.outputLogTo(io.Discard)
 
 	resp, err := c.R().
+		SetDebug(true).
 		SetFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
 		SetBasicAuth("myuser", "mypass").
 		Post(ts.URL + "/profile")
@@ -922,6 +1086,29 @@ func TestMultiPartMultipartFields(t *testing.T) {
 	assertEqual(t, true, strings.Contains(responseStr, "upload-file-2.json"))
 }
 
+func TestMultiPartCustomBoundary(t *testing.T) {
+	ts := createFormPostServer(t)
+	defer ts.Close()
+	defer cleanupFiles(".testdata/upload")
+
+	_, err := dclr().
+		SetMultipartFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
+		SetMultipartBoundary(`"my-custom-boundary"`).
+		SetBasicAuth("myuser", "mypass").
+		Post(ts.URL + "/profile")
+
+	assertEqual(t, "mime: invalid boundary character", err.Error())
+
+	resp, err := dclr().
+		SetMultipartFormData(map[string]string{"first_name": "Jeevanandam", "last_name": "M", "zip_code": "00001"}).
+		SetMultipartBoundary("my-custom-boundary").
+		Post(ts.URL + "/profile")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, "Success", resp.String())
+}
+
 func TestGetWithCookie(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
@@ -1088,8 +1275,8 @@ func TestHTTPAutoRedirectUpTo10(t *testing.T) {
 
 	_, err := dc().R().Get(ts.URL + "/redirect-1")
 
-	assertEqual(t, true, ("Get /redirect-11: stopped after 10 redirects" == err.Error() ||
-		"Get \"/redirect-11\": stopped after 10 redirects" == err.Error()))
+	assertEqual(t, true, (err.Error() == "Get /redirect-11: stopped after 10 redirects" ||
+		err.Error() == "Get \"/redirect-11\": stopped after 10 redirects"))
 }
 
 func TestHostCheckRedirectPolicy(t *testing.T) {
@@ -1135,7 +1322,7 @@ func TestPatchMethod(t *testing.T) {
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
 
-	resp.body = nil
+	resp.SetBody(nil)
 	assertEqual(t, "", resp.String())
 }
 
@@ -1218,7 +1405,7 @@ func TestRawFileUploadByBody(t *testing.T) {
 func TestProxySetting(t *testing.T) {
 	c := dc()
 
-	transport, err := c.transport()
+	transport, err := c.Transport()
 
 	assertNil(t, err)
 
@@ -1283,7 +1470,7 @@ func TestDetectContentTypeForPointer(t *testing.T) {
 }
 
 type ExampleUser struct {
-	FirstName string `json:"frist_name"`
+	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
 	ZipCode   string `json:"zip_code"`
 }
@@ -1430,7 +1617,8 @@ func TestSetHeaderVerbatim(t *testing.T) {
 		SetHeaderVerbatim("header-lowercase", "value_lowercase").
 		SetHeader("header-lowercase", "value_standard")
 
-	assertEqual(t, "value_lowercase", strings.Join(r.Header["header-lowercase"], "")) //nolint
+	//lint:ignore SA1008 valid one ignore this!
+	assertEqual(t, "value_lowercase", strings.Join(r.Header["header-lowercase"], ""))
 	assertEqual(t, "value_standard", r.Header.Get("Header-Lowercase"))
 }
 
@@ -1574,6 +1762,43 @@ func TestRequestDoNotParseResponse(t *testing.T) {
 	assertNil(t, resp.RawBody())
 }
 
+func TestRequestDoNotParseResponseDebugLog(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	t.Run("do not parse response debug log client level", func(t *testing.T) {
+		c := dc().
+			SetDoNotParseResponse(true).
+			SetDebug(true)
+
+		var lgr bytes.Buffer
+		c.outputLogTo(&lgr)
+
+		_, err := c.R().
+			SetQueryParam("request_no", strconv.FormatInt(time.Now().Unix(), 10)).
+			Get(ts.URL + "/")
+
+		assertError(t, err)
+		assertEqual(t, true, strings.Contains(lgr.String(), "***** DO NOT PARSE RESPONSE - Enabled *****"))
+	})
+
+	t.Run("do not parse response debug log request level", func(t *testing.T) {
+		c := dc()
+
+		var lgr bytes.Buffer
+		c.outputLogTo(&lgr)
+
+		_, err := c.R().
+			SetDebug(true).
+			SetDoNotParseResponse(true).
+			SetQueryParam("request_no", strconv.FormatInt(time.Now().Unix(), 10)).
+			Get(ts.URL + "/")
+
+		assertError(t, err)
+		assertEqual(t, true, strings.Contains(lgr.String(), "***** DO NOT PARSE RESPONSE - Enabled *****"))
+	})
+}
+
 type noCtTest struct {
 	Response string `json:"response"`
 }
@@ -1601,7 +1826,7 @@ func TestGetPathParamAndPathParams(t *testing.T) {
 	defer ts.Close()
 
 	c := dc().
-		SetHostURL(ts.URL).
+		SetBaseURL(ts.URL).
 		SetPathParam("userId", "sample@sample.com")
 
 	resp, err := c.R().SetPathParam("subAccountId", "100002").
@@ -1709,26 +1934,101 @@ func TestHostHeaderOverride(t *testing.T) {
 	logResponse(t, resp)
 }
 
+type HTTPErrorResponse struct {
+	Error string `json:"error,omitempty"`
+}
+
+func TestNotFoundWithError(t *testing.T) {
+	var httpError HTTPErrorResponse
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	resp, err := dc().R().
+		SetHeader(hdrContentTypeKey, "application/json").
+		SetError(&httpError).
+		Get(ts.URL + "/not-found-with-error")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusNotFound, resp.StatusCode())
+	assertEqual(t, "404 Not Found", resp.Status())
+	assertNotNil(t, resp.Body())
+	assertEqual(t, "{\"error\": \"Not found\"}", resp.String())
+	assertNotNil(t, httpError)
+	assertEqual(t, "Not found", httpError.Error)
+
+	logResponse(t, resp)
+}
+
+func TestNotFoundWithoutError(t *testing.T) {
+	var httpError HTTPErrorResponse
+
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	c := dc().outputLogTo(os.Stdout)
+	resp, err := c.R().
+		SetError(&httpError).
+		SetHeader(hdrContentTypeKey, "application/json").
+		Get(ts.URL + "/not-found-no-error")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusNotFound, resp.StatusCode())
+	assertEqual(t, "404 Not Found", resp.Status())
+	assertNotNil(t, resp.Body())
+	assertEqual(t, 0, len(resp.Body()))
+	assertNotNil(t, httpError)
+	assertEqual(t, "", httpError.Error)
+
+	logResponse(t, resp)
+}
+
 func TestPathParamURLInput(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
 
-	c := dc().SetDebug(true).
-		SetHostURL(ts.URL).
+	c := dc().
+		SetBaseURL(ts.URL).
 		SetPathParams(map[string]string{
 			"userId": "sample@sample.com",
+			"path":   "users/developers",
 		})
 
 	resp, err := c.R().
+		SetDebug(true).
 		SetPathParams(map[string]string{
 			"subAccountId": "100002",
 			"website":      "https://example.com",
-		}).Get("/v1/users/{userId}/{subAccountId}/{website}")
+		}).Get("/v1/users/{userId}/{subAccountId}/{path}/{website}")
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
 	assertEqual(t, true, strings.Contains(resp.String(), "TestPathParamURLInput: text response"))
-	assertEqual(t, true, strings.Contains(resp.String(), "/v1/users/sample@sample.com/100002/https:%2F%2Fexample.com"))
+	assertEqual(t, true, strings.Contains(resp.String(), "/v1/users/sample@sample.com/100002/users%2Fdevelopers/https:%2F%2Fexample.com"))
+
+	logResponse(t, resp)
+}
+
+func TestRawPathParamURLInput(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	c := dc().SetDebug(true).
+		SetBaseURL(ts.URL).
+		SetRawPathParams(map[string]string{
+			"userId": "sample@sample.com",
+			"path":   "users/developers",
+		})
+
+	resp, err := c.R().
+		SetRawPathParams(map[string]string{
+			"subAccountId": "100002",
+			"website":      "https://example.com",
+		}).Get("/v1/users/{userId}/{subAccountId}/{path}/{website}")
+
+	assertError(t, err)
+	assertEqual(t, http.StatusOK, resp.StatusCode())
+	assertEqual(t, true, strings.Contains(resp.String(), "TestPathParamURLInput: text response"))
+	assertEqual(t, true, strings.Contains(resp.String(), "/v1/users/sample@sample.com/100002/users/developers/https://example.com"))
 
 	logResponse(t, resp)
 }
@@ -1839,7 +2139,8 @@ func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
 
 	// upload a text file with no more than 512 bytes
 	output = bytes.NewBufferString("")
-	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+	resp, err = New().outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetDebug(true).
 		SetFile("file", filepath.Join(getTestDataPath(), "text-file.txt")).
 		SetHeader("Content-Type", "text/plain").
 		Post(ts.URL + "/upload")
@@ -1866,7 +2167,8 @@ func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
 
 	// post form with no more than 512 bytes data
 	output = bytes.NewBufferString("")
-	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+	resp, err = New().outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetDebug(true).
 		SetFormData(map[string]string{
 			"first_name": "Alex",
 			"last_name":  "C",
@@ -1893,7 +2195,8 @@ func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
 
 	// post slice with more than 512 bytes data
 	output = bytes.NewBufferString("")
-	resp, err = New().SetDebug(true).outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+	resp, err = New().outputLogTo(output).SetDebugBodyLimit(debugBodySizeLimit).R().
+		SetDebug(true).
 		SetBody([]string{strings.Repeat("C", int(debugBodySizeLimit))}).
 		SetBasicAuth("myuser", "mypass").
 		Post(formTs.URL + "/profile")
@@ -1943,4 +2246,39 @@ func TestSetResultMustNotPanicOnNil(t *testing.T) {
 		}
 	}()
 	dc().R().SetResult(nil)
+}
+
+func TestRequestGH917(t *testing.T) {
+	// Mock server returns 500 status code to cause client retries.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		assertError(t, err)
+		assertEqual(t, "test", string(b))
+
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	client := New().AddRetryCondition(
+		func(r *Response, err error) bool {
+			return err != nil || r.StatusCode() > 499
+		},
+	).SetRetryCount(3)
+
+	wg := sync.WaitGroup{}
+	// Run tests concurrently to make the issue easily to observe.
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				buf := bytes.NewBufferString("test")
+				// Trigger some retries
+				resp, err := client.R().SetBody(buf).SetContentLength(true).Execute(http.MethodPost, srv.URL)
+				assertNil(t, err)
+				assertEqual(t, http.StatusInternalServerError, resp.StatusCode())
+				assertEqual(t, "", string(resp.Body()))
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2024 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -219,8 +219,8 @@ func TestClientRetryWait(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := time.Duration(3) * time.Second
-	retryMaxWaitTime := time.Duration(9) * time.Second
+	retryWaitTime := time.Duration(50) * time.Millisecond
+	retryMaxWaitTime := time.Duration(150) * time.Millisecond
 
 	c := dc().
 		SetRetryCount(retryCount).
@@ -262,7 +262,7 @@ func TestClientRetryWaitMaxInfinite(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := time.Duration(3) * time.Second
+	retryWaitTime := time.Duration(100) * time.Millisecond
 	retryMaxWaitTime := time.Duration(-1.0) // negative value
 
 	c := dc().
@@ -295,6 +295,20 @@ func TestClientRetryWaitMaxInfinite(t *testing.T) {
 	}
 }
 
+func TestClientRetryWaitMaxMinimum(t *testing.T) {
+	ts := createGetServer(t)
+	defer ts.Close()
+
+	const retryMaxWaitTime = time.Nanosecond // minimal duration value
+
+	c := dc().
+		SetRetryCount(1).
+		SetRetryMaxWaitTime(retryMaxWaitTime).
+		AddRetryCondition(func(*Response, error) bool { return true })
+	_, err := c.R().Get(ts.URL + "/set-retrywaittime-test")
+	assertError(t, err)
+}
+
 func TestClientRetryWaitCallbackError(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
@@ -305,8 +319,8 @@ func TestClientRetryWaitCallbackError(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := 3 * time.Second
-	retryMaxWaitTime := 9 * time.Second
+	retryWaitTime := 50 * time.Millisecond
+	retryMaxWaitTime := 150 * time.Millisecond
 
 	retryAfter := func(client *Client, resp *Response) (time.Duration, error) {
 		return 0, errors.New("quota exceeded")
@@ -345,11 +359,11 @@ func TestClientRetryWaitCallback(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := 3 * time.Second
-	retryMaxWaitTime := 9 * time.Second
+	retryWaitTime := 50 * time.Millisecond
+	retryMaxWaitTime := 150 * time.Millisecond
 
 	retryAfter := func(client *Client, resp *Response) (time.Duration, error) {
-		return 5 * time.Second, nil
+		return 50 * time.Millisecond, nil
 	}
 
 	c := dc().
@@ -393,11 +407,11 @@ func TestClientRetryWaitCallbackTooShort(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := 3 * time.Second
-	retryMaxWaitTime := 9 * time.Second
+	retryWaitTime := 50 * time.Millisecond
+	retryMaxWaitTime := 150 * time.Millisecond
 
 	retryAfter := func(client *Client, resp *Response) (time.Duration, error) {
-		return 2 * time.Second, nil // too short duration
+		return 10 * time.Millisecond, nil // too short duration
 	}
 
 	c := dc().
@@ -441,11 +455,11 @@ func TestClientRetryWaitCallbackTooLong(t *testing.T) {
 	retryIntervals := make([]uint64, retryCount+1)
 
 	// Set retry wait times that do not intersect with default ones
-	retryWaitTime := 1 * time.Second
-	retryMaxWaitTime := 3 * time.Second
+	retryWaitTime := 10 * time.Millisecond
+	retryMaxWaitTime := 100 * time.Millisecond
 
 	retryAfter := func(client *Client, resp *Response) (time.Duration, error) {
-		return 4 * time.Second, nil // too long duration
+		return 150 * time.Millisecond, nil // too long duration
 	}
 
 	c := dc().
@@ -602,18 +616,18 @@ func TestClientRetryPost(t *testing.T) {
 
 	if resp != nil {
 		if resp.StatusCode() == http.StatusInternalServerError {
-			t.Logf("Got response body: %s", string(resp.body))
+			t.Logf("Got response body: %s", resp.String())
 			var usersResponse []map[string]interface{}
 			err := json.Unmarshal(resp.body, &usersResponse)
 			assertError(t, err)
 
 			if !reflect.DeepEqual(users, usersResponse) {
-				t.Errorf("Expected request body to be echoed back as response body. Instead got: %s", string(resp.body))
+				t.Errorf("Expected request body to be echoed back as response body. Instead got: %s", resp.String())
 			}
 
 			return
 		}
-		t.Errorf("Got unexpected response code: %d with body: %s", resp.StatusCode(), string(resp.body))
+		t.Errorf("Got unexpected response code: %d with body: %s", resp.StatusCode(), resp.String())
 	}
 }
 
@@ -737,7 +751,7 @@ func filler(*Response, error) bool {
 	return false
 }
 
-var seekFailure = fmt.Errorf("failing seek test")
+var errSeekFailure = fmt.Errorf("failing seek test")
 
 type failingSeeker struct {
 	reader *bytes.Reader
@@ -749,7 +763,7 @@ func (f failingSeeker) Read(b []byte) (n int, err error) {
 
 func (f failingSeeker) Seek(offset int64, whence int) (int64, error) {
 	if offset == 0 && whence == io.SeekStart {
-		return 0, seekFailure
+		return 0, errSeekFailure
 	}
 
 	return f.reader.Seek(offset, whence)
@@ -774,7 +788,7 @@ func TestResetMultipartReaderSeekStartError(t *testing.T) {
 		Post(ts.URL + "/set-reset-multipart-readers-test")
 
 	assertEqual(t, 500, resp.StatusCode())
-	assertEqual(t, err.Error(), seekFailure.Error())
+	assertEqual(t, err.Error(), errSeekFailure.Error())
 }
 
 func TestResetMultipartReaders(t *testing.T) {
@@ -804,6 +818,61 @@ func TestResetMultipartReaders(t *testing.T) {
 
 	resp, err := c.R().
 		SetFileReader("name", "filename", bufReader).
+		Post(ts.URL + "/set-reset-multipart-readers-test")
+
+	assertEqual(t, 500, resp.StatusCode())
+	assertNil(t, err)
+}
+
+func TestResetMultipartFieldReaderSeekStartError(t *testing.T) {
+	ts := createFilePostServer(t)
+	defer ts.Close()
+
+	testSeeker := &failingSeeker{
+		bytes.NewReader([]byte("test")),
+	}
+
+	c := dc().
+		SetRetryCount(2).
+		SetTimeout(time.Second * 3).
+		SetRetryResetReaders(true).
+		AddRetryAfterErrorCondition()
+
+	resp, err := c.R().
+		SetMultipartField("file", "audio.wav", "audio/wav", testSeeker).
+		Post(ts.URL + "/set-reset-multipart-readers-test")
+
+	assertEqual(t, 500, resp.StatusCode())
+	assertEqual(t, err.Error(), errSeekFailure.Error())
+}
+
+func TestResetMultipartFieldReaders(t *testing.T) {
+	ts := createFilePostServer(t)
+	defer ts.Close()
+
+	str := "test"
+	buf := []byte(str)
+
+	bufReader := bytes.NewReader(buf)
+	bufCpy := make([]byte, len(buf))
+
+	c := dc().
+		SetRetryCount(2).
+		SetTimeout(time.Second * 3).
+		SetRetryResetReaders(true).
+		AddRetryAfterErrorCondition().
+		AddRetryHook(
+			func(response *Response, _ error) {
+				read, err := bufReader.Read(bufCpy)
+
+				assertNil(t, err)
+				assertEqual(t, len(buf), read)
+				assertEqual(t, str, string(bufCpy))
+			},
+		)
+
+	resp, err := c.R().
+		SetMultipartField("file", "audio.wav", "audio/wav", bufReader).
 		Post(ts.URL + "/set-reset-multipart-readers-test")
 
 	assertEqual(t, 500, resp.StatusCode())
