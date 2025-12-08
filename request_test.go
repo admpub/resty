@@ -1827,10 +1827,11 @@ func TestGetPathParamAndPathParams(t *testing.T) {
 
 	c := dc().
 		SetBaseURL(ts.URL).
-		SetPathParam("userId", "sample@sample.com")
+		SetPathParam("userId", "sample@sample.com").
+		SetRawPathParam("details", "/details")
 
 	resp, err := c.R().SetPathParam("subAccountId", "100002").
-		Get("/v1/users/{userId}/{subAccountId}/details")
+		Get("/v1/users/{userId}/{subAccountId}{details}")
 
 	assertError(t, err)
 	assertEqual(t, http.StatusOK, resp.StatusCode())
@@ -2102,6 +2103,19 @@ func TestTraceInfoWithoutEnableTrace(t *testing.T) {
 	}
 }
 
+func TestTraceInfoWithInvalidRequest(t *testing.T) {
+	client := dc()
+	resp, err := client.R().EnableTrace().Get("unknown://url.com")
+	assertNotNil(t, err)
+	tr := resp.Request.TraceInfo()
+	assertEqual(t, true, tr.DNSLookup == 0)
+	assertEqual(t, true, tr.ConnTime == 0)
+	assertEqual(t, true, tr.TLSHandshake == 0)
+	assertEqual(t, true, tr.ServerTime == 0)
+	assertEqual(t, true, tr.ResponseTime == 0)
+	assertEqual(t, true, tr.TotalTime > 0 && tr.TotalTime < time.Second)
+}
+
 func TestTraceInfoOnTimeout(t *testing.T) {
 	client := dc()
 	client.SetHostURL("http://resty-nowhere.local").EnableTrace()
@@ -2119,6 +2133,83 @@ func TestTraceInfoOnTimeout(t *testing.T) {
 	assertEqual(t, true, tr.ResponseTime == 0)
 	assertEqual(t, true, tr.TotalTime > 0)
 	assertEqual(t, true, tr.TotalTime == resp.Time())
+}
+
+func TestTraceInfoOnTimeoutWithSetTimeout(t *testing.T) {
+	t.Run("timeout with very short timeout", func(t *testing.T) {
+		client := New().
+			SetTimeout(1 * time.Millisecond).
+			SetBaseURL("http://resty-nowhere.local").
+			EnableTrace()
+
+		resp, err := client.R().Get("/")
+		assertNotNil(t, err)
+		assertNotNil(t, resp)
+
+		tr := resp.Request.TraceInfo()
+
+		assertEqual(t, true, tr.DNSLookup >= 0)
+		assertEqual(t, true, tr.ConnTime == 0)
+		assertEqual(t, true, tr.TLSHandshake == 0)
+		assertEqual(t, true, tr.TCPConnTime == 0)
+		assertEqual(t, true, tr.ServerTime == 0)
+		assertEqual(t, true, tr.ResponseTime == 0)
+		assertEqual(t, true, tr.TotalTime > 0)
+		assertEqual(t, true, tr.TotalTime == resp.Time())
+	})
+
+	t.Run("successful request with SetTimeout", func(t *testing.T) {
+		ts := createGetServer(t)
+		defer ts.Close()
+
+		client := New().
+			SetTimeout(5 * time.Second).
+			SetBaseURL(ts.URL).
+			EnableTrace()
+
+		resp, err := client.R().Get("/")
+		assertNil(t, err)
+		assertNotNil(t, resp)
+
+		tr := resp.Request.TraceInfo()
+
+		assertEqual(t, true, tr.DNSLookup >= 0)
+		assertEqual(t, true, tr.ConnTime >= 0)
+		assertEqual(t, true, tr.TLSHandshake >= 0)
+		assertEqual(t, true, tr.TCPConnTime >= 0)
+		assertEqual(t, true, tr.ServerTime >= 0)
+		assertEqual(t, true, tr.ResponseTime >= 0)
+		assertEqual(t, true, tr.TotalTime > 0)
+		assertEqual(t, true, tr.TotalTime == resp.Time())
+	})
+
+	t.Run("HTTPS request with TLS handshake", func(t *testing.T) {
+		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		}))
+		defer ts.Close()
+
+		client := New().
+			SetTimeout(5 * time.Second).
+			SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+			EnableTrace()
+
+		resp, err := client.R().Get(ts.URL)
+		assertNil(t, err)
+		assertNotNil(t, resp)
+
+		tr := resp.Request.TraceInfo()
+
+		assertEqual(t, true, tr.TLSHandshake > 0)
+		assertEqual(t, true, tr.DNSLookup >= 0)
+		assertEqual(t, true, tr.ConnTime >= 0)
+		assertEqual(t, true, tr.TCPConnTime >= 0)
+		assertEqual(t, true, tr.ServerTime >= 0)
+		assertEqual(t, true, tr.ResponseTime >= 0)
+		assertEqual(t, true, tr.TotalTime > 0)
+		assertEqual(t, true, tr.TotalTime == resp.Time())
+	})
 }
 
 func TestDebugLoggerRequestBodyTooLarge(t *testing.T) {
@@ -2281,4 +2372,28 @@ func TestRequestGH917(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestSetContentLengthTrueWithNilBody(t *testing.T) {
+	ts := createPostServer(t)
+	defer ts.Close()
+
+	c := dc()
+
+	c.OnBeforeRequest(func(client *Client, request *Request) error {
+		request.
+			SetBody(nil).
+			SetContentLength(true)
+
+		return nil
+	})
+
+	c = c.SetBaseURL(ts.URL)
+
+	resp, err := c.R().Execute("POST", "/check-request-content-length")
+
+	assertNil(t, err)
+
+	// when body is nil and SetContentLength is true expect Content-Length == "0"
+	assertEqual(t, "0", resp.Header().Get("Request-Content-Length"))
 }
